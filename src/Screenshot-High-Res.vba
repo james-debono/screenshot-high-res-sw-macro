@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.1 - Module1
+' Export PNG 0.3.2 - Module1
 '
 ' Paste-ready: open Module1 in the VBA editor, select all, paste this in.
 ' (The "Attribute VB_Name" line is deliberately not here - it is managed by
@@ -35,6 +35,12 @@ Option Explicit
 ' active document each time rather than caching it at load.
 ' -----------------------------------------------------------------------------
 
+#If VBA7 Then
+    Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+#Else
+    Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+#End If
+
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
 
@@ -50,6 +56,10 @@ Public Const MAX_PX As Long = 10000
 ' Roughly how many pixels wide the preview render should be
 Private Const PREVIEW_PX As Long = 520
 Private Const MIN_PREVIEW_DPI As Long = 6
+
+' How long the idle loop naps between message pumps. Small enough to stay
+' imperceptible while orbiting, large enough not to spin a core flat.
+Private Const IDLE_MS As Long = 10
 
 ' Background handling passed to the image helper
 Public Const BG_KEEP As Long = 0
@@ -76,9 +86,20 @@ Private m_lPreviewW As Long
 Private m_lPreviewH As Long
 
 Sub ShowSaveAsForm()
-    ' Modeless, so the model can still be orbited while the form is open
     Load UserForm1
     UserForm1.Show vbModeless
+
+    ' A SOLIDWORKS macro ends the moment this sub returns, and that takes any
+    ' modeless form down with it - which looks exactly like the form never
+    ' opening, with no error. Idling here keeps the macro alive until the form
+    ' is closed.
+    '
+    ' DoEvents hands control back to SOLIDWORKS so the view stays fully
+    ' interactive; the short Sleep stops the loop spinning a CPU core flat.
+    Do While UserForms.Count > 0
+        DoEvents
+        Sleep IDLE_MS
+    Loop
 End Sub
 
 ' --- Active document ----------------------------------------------------------

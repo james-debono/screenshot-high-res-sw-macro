@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.1 - UserForm1
+' Export PNG 0.3.2 - UserForm1
 '
 ' Paste-ready: right-click UserForm1 > View Code, select all, paste this in.
 ' Do NOT import this as a .frm - that would overwrite the layout you built.
@@ -24,6 +24,11 @@ Option Explicit
 ' Set while the form is being populated, so the control events below do not
 ' start rendering previews before everything is in place.
 Private m_bLoading As Boolean
+
+' The macro idles in a DoEvents loop to stay alive while this form is open, and
+' the export itself can pump messages. Without this guard a second click part
+' way through an export would start a second one on top of the first.
+Private m_bBusy As Boolean
 
 Private Sub UserForm_Initialize()
     m_bLoading = True
@@ -61,6 +66,8 @@ Private Sub CommandButton1_Click() ' Export
     Dim sName As String
     Dim lResult As Long
 
+    If m_bBusy Then Exit Sub
+
     If Not HasActiveDoc() Then
         MsgBox "No document is open.", vbExclamation
         Exit Sub
@@ -79,9 +86,11 @@ Private Sub CommandButton1_Click() ' Export
         Exit Sub
     End If
 
+    m_bBusy = True
     Me.MousePointer = fmMousePointerHourGlass
     lResult = ExportToDownloads(sName, pxW, pxH, Me.OptionButton1.Value)
     Me.MousePointer = fmMousePointerDefault
+    m_bBusy = False
 
     ' The form stays open on purpose now that it is modeless - reframe and
     ' export again without reopening it.
@@ -126,6 +135,7 @@ Private Sub RefreshPreview(ByVal bForce As Boolean)
     Dim sBmp As String
 
     If m_bLoading Then Exit Sub
+    If m_bBusy Then Exit Sub
 
     If Not HasActiveDoc() Then
         Me.Image1.Picture = LoadPicture("")
@@ -139,9 +149,11 @@ Private Sub RefreshPreview(ByVal bForce As Boolean)
 
     If Not TryGetSize(pxW, pxH, bForce) Then Exit Sub
 
+    m_bBusy = True
     Me.MousePointer = fmMousePointerHourGlass
     sBmp = PreviewToBmp(pxW, pxH, BackgroundMode(), bForce)
     Me.MousePointer = fmMousePointerDefault
+    m_bBusy = False
 
     If sBmp = "" Then
         Me.Image1.Picture = LoadPicture("")
