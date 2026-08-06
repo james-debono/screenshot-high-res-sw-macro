@@ -6,7 +6,7 @@
 ' location, with an optional transparent background and a live preview of the
 ' framing.
 '
-'   Version   0.5.1
+'   Version   0.5.2
 '   Author    James Debono
 '   Updated   2026-08-06
 '   License   (to be added)
@@ -49,9 +49,9 @@
 ' Save location
 '   A folder is chosen on the form and remembered between sessions, along with a
 '   short list of recently used folders. MODEL_FOLDER_TOKEN is a reserved list
-'   entry meaning "beside the active document". SOLIDWORKS exposes no folder
-'   picker, only file dialogs, so Browse uses ISldWorks::GetOpenFileName and
-'   takes the folder from the selected file - see BrowseFolder.
+'   entry meaning "beside the active document". Browse shows the standard
+'   Windows folder picker, raised out of process because VBA cannot reach the
+'   interface it needs - see BrowseFolder.
 '
 ' Form lifetime
 '   The form is modeless so the view can be manipulated while it is open. A
@@ -234,50 +234,170 @@ Public Function CreateFolderTree(ByVal sPath As String) As Boolean
     CreateFolderTree = fso.FolderExists(sPath)
 End Function
 
-' Uses ISldWorks::GetOpenFileName, the same dialog SOLIDWORKS opens files with,
-' so the macro looks native rather than raising the shell's folder tree.
+' Shows the standard Windows folder picker - the Explorer style common item
+' dialog with FOS_PICKFOLDERS - and returns the chosen folder, or an empty
+' string if cancelled.
 '
-' It is a file dialog, not a folder dialog - SOLIDWORKS exposes no folder
-' picker. The folder is therefore taken from whatever file is selected, and the
-' dialog is seeded with the current location and file name so it opens in the
-' right place with a name already filled in.
+' Why it goes out to PowerShell. That dialog is IFileOpenDialog, a vtable only
+' COM interface with no IDispatch, so VBA cannot reach it with CreateObject.
+' SOLIDWORKS offers file dialogs but no folder picker, and the shell's
+' BrowseForFolder is the older tree. A .NET host can declare the interface
+' directly, and this macro already shells out to PowerShell for image work, so
+' the dialog is raised there.
 '
-' Consequence: selecting from a completely empty folder depends on the dialog
-' accepting the seeded name rather than insisting on an existing file. If it
-' will not, the path can still be typed or pasted into the box on the form.
+' Running it out of process is also a safety property worth keeping: a mistake
+' in the interop takes down a throwaway powershell.exe rather than SOLIDWORKS.
 '
-' Returns the folder, or an empty string if cancelled.
-Public Function BrowseFolder(ByVal sTitle As String, ByVal sStartFolder As String, _
-                             ByVal sSuggestedName As String) As String
-    Dim sPicked As String
-    Dim sInitial As String
-    Dim lOptions As Long
-    Dim sConfig As String
-    Dim sDisplay As String
-    Dim lSlash As Long
+' The result comes back through a file rather than stdout, because WScript.Shell
+' Run cannot capture output and Exec cannot hide its console window.
+Public Function BrowseFolder(ByVal sTitle As String, ByVal sStartFolder As String) As String
+    Dim sScript As String
+    Dim sResult As String
+    Dim lRc As Long
 
-    Set swApp = Application.SldWorks
+    sScript = Environ("TEMP") & "\ExportPNG_pick.ps1"
+    sResult = Environ("TEMP") & "\ExportPNG_pick.txt"
 
-    If sSuggestedName = "" Then sSuggestedName = "image"
-    If sStartFolder <> "" Then sInitial = sStartFolder & "\" & sSuggestedName & ".PNG"
+    On Error Resume Next
+    Kill sResult
+    On Error GoTo 0
+
+    WriteFolderPicker sScript
+
+    If sStartFolder = "" Then sStartFolder = DefaultSaveFolder()
+
+    lRc = RunHidden("powershell.exe -NoProfile -ExecutionPolicy Bypass -File " & _
+                    Quote(sScript) & " -Start " & Quote(sStartFolder) & _
+                    " -Title " & Quote(sTitle) & " -Out " & Quote(sResult))
+
+    ' 0 picked, 1 cancelled, anything else failed
+    If lRc = 0 Then BrowseFolder = ReadUnicodeLine(sResult)
+
+    On Error Resume Next
+    Kill sScript
+    Kill sResult
+    On Error GoTo 0
+End Function
+
+' Unlike the image helper, this script does contain double quotes - C# attribute
+' arguments cannot be written without them - so they are escaped as "" below.
+Private Sub WriteFolderPicker(ByVal sPath As String)
+    Dim iFile As Integer
+
+    iFile = FreeFile
+    Open sPath For Output As #iFile
+
+    Print #iFile, "param([string]$Start = '',[string]$Title = '',[string]$Out = '')"
+    Print #iFile, "$ErrorActionPreference = 'Stop'"
+    Print #iFile, "$cs = @'"
+    Print #iFile, "using System;"
+    Print #iFile, "using System.Runtime.InteropServices;"
+    Print #iFile, "public static class Picker {"
+    Print #iFile, "  [ComImport, Guid(""43826d1e-e718-42ee-bc55-a1e261c37bfe""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]"
+    Print #iFile, "  public interface IShellItem {"
+    Print #iFile, "    void BindToHandler(IntPtr b, ref Guid s, ref Guid r, out IntPtr v);"
+    Print #iFile, "    void GetParent(out IShellItem p);"
+    Print #iFile, "    void GetDisplayName(uint sigdn, out IntPtr name);"
+    Print #iFile, "    void GetAttributes(uint mask, out uint attribs);"
+    Print #iFile, "    void Compare(IShellItem psi, uint hint, out int order);"
+    Print #iFile, "  }"
+    ' Every IFileDialog method must be declared, in order, or the vtable slots
+    ' shift and the wrong function is called
+    Print #iFile, "  [ComImport, Guid(""d57c7288-d4ad-4768-be02-9d969532d960""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]"
+    Print #iFile, "  public interface IFileOpenDialog {"
+    Print #iFile, "    [PreserveSig] int Show(IntPtr parent);"
+    Print #iFile, "    void SetFileTypes(uint c, IntPtr specs);"
+    Print #iFile, "    void SetFileTypeIndex(uint i);"
+    Print #iFile, "    void GetFileTypeIndex(out uint i);"
+    Print #iFile, "    void Advise(IntPtr de, out uint cookie);"
+    Print #iFile, "    void Unadvise(uint cookie);"
+    Print #iFile, "    void SetOptions(uint fos);"
+    Print #iFile, "    void GetOptions(out uint fos);"
+    Print #iFile, "    void SetDefaultFolder(IShellItem si);"
+    Print #iFile, "    void SetFolder(IShellItem si);"
+    Print #iFile, "    void GetFolder(out IShellItem si);"
+    Print #iFile, "    void GetCurrentSelection(out IShellItem si);"
+    Print #iFile, "    void SetFileName(string name);"
+    Print #iFile, "    void GetFileName(out IntPtr name);"
+    Print #iFile, "    void SetTitle(string title);"
+    Print #iFile, "    void SetOkButtonLabel(string text);"
+    Print #iFile, "    void SetFileNameLabel(string label);"
+    Print #iFile, "    void GetResult(out IShellItem si);"
+    Print #iFile, "    void AddPlace(IShellItem si, int fdap);"
+    Print #iFile, "    void SetDefaultExtension(string ext);"
+    Print #iFile, "    void Close(int hr);"
+    Print #iFile, "    void SetClientGuid(ref Guid g);"
+    Print #iFile, "    void ClearClientData();"
+    Print #iFile, "    void SetFilter(IntPtr filter);"
+    Print #iFile, "    void GetResults(out IntPtr items);"
+    Print #iFile, "    void GetSelectedItems(out IntPtr items);"
+    Print #iFile, "  }"
+    Print #iFile, "  [DllImport(""shell32.dll"", CharSet = CharSet.Unicode, PreserveSig = false)]"
+    Print #iFile, "  private static extern void SHCreateItemFromParsingName("
+    Print #iFile, "      string path, IntPtr bc, ref Guid iid,"
+    Print #iFile, "      [MarshalAs(UnmanagedType.Interface)] out IShellItem item);"
+    Print #iFile, "  private const uint FOS_PICKFOLDERS     = 0x20;"
+    Print #iFile, "  private const uint FOS_FORCEFILESYSTEM = 0x40;"
+    Print #iFile, "  private const uint SIGDN_FILESYSPATH   = 0x80058000;"
+    Print #iFile, "  public static string Pick(string start, string title) {"
+    Print #iFile, "    Type t = Type.GetTypeFromCLSID(new Guid(""DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7""));"
+    Print #iFile, "    IFileOpenDialog d = (IFileOpenDialog)Activator.CreateInstance(t);"
+    Print #iFile, "    uint opts;"
+    Print #iFile, "    d.GetOptions(out opts);"
+    Print #iFile, "    d.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);"
+    Print #iFile, "    if (title != null && title.Length > 0) d.SetTitle(title);"
+    Print #iFile, "    if (start != null && start.Length > 0) {"
+    Print #iFile, "      try {"
+    Print #iFile, "        Guid iid = new Guid(""43826d1e-e718-42ee-bc55-a1e261c37bfe"");"
+    Print #iFile, "        IShellItem si;"
+    Print #iFile, "        SHCreateItemFromParsingName(start, IntPtr.Zero, ref iid, out si);"
+    Print #iFile, "        if (si != null) d.SetFolder(si);"
+    Print #iFile, "      } catch { }"
+    Print #iFile, "    }"
+    Print #iFile, "    int hr = d.Show(IntPtr.Zero);"
+    Print #iFile, "    if (hr != 0) { Marshal.ReleaseComObject(d); return String.Empty; }"
+    Print #iFile, "    IShellItem res;"
+    Print #iFile, "    d.GetResult(out res);"
+    Print #iFile, "    IntPtr p;"
+    Print #iFile, "    res.GetDisplayName(SIGDN_FILESYSPATH, out p);"
+    Print #iFile, "    string path = Marshal.PtrToStringUni(p);"
+    Print #iFile, "    Marshal.FreeCoTaskMem(p);"
+    Print #iFile, "    Marshal.ReleaseComObject(d);"
+    Print #iFile, "    return path;"
+    Print #iFile, "  }"
+    Print #iFile, "}"
+    Print #iFile, "'@"
+    Print #iFile, "Add-Type -TypeDefinition $cs"
+    Print #iFile, "try {"
+    Print #iFile, "  $p = [Picker]::Pick($Start, $Title)"
+    Print #iFile, "  if ($p -eq '') { exit 1 }"
+    ' Unicode so that folder names outside the ANSI code page survive
+    Print #iFile, "  Set-Content -LiteralPath $Out -Value $p -Encoding Unicode"
+    Print #iFile, "  exit 0"
+    Print #iFile, "} catch { exit 2 }"
+
+    Close #iFile
+End Sub
+
+' Read back as UTF-16 to match what the picker writes, so folder names outside
+' the ANSI code page are not mangled.
+Private Function ReadUnicodeLine(ByVal sPath As String) As String
+    Dim fso As Object
+    Dim ts As Object
 
     On Error GoTo Bail
 
-    ' OpenOptions, ConfigName and DisplayName are all ByRef and unused here, but
-    ' must still be passed as variables rather than literals
-    sPicked = swApp.GetOpenFileName(sTitle, sInitial, _
-                                    "PNG Files (*.png)|*.png|All Files (*.*)|*.*", _
-                                    lOptions, sConfig, sDisplay)
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If Not fso.FileExists(sPath) Then Exit Function
 
-    If sPicked = "" Then Exit Function ' cancelled
-
-    lSlash = InStrRev(sPicked, "\")
-    If lSlash > 1 Then BrowseFolder = Left$(sPicked, lSlash - 1)
+    Set ts = fso.OpenTextFile(sPath, 1, False, -1) ' ForReading, TristateTrue
+    If Not ts.AtEndOfStream Then ReadUnicodeLine = Trim$(ts.ReadLine)
+    ts.Close
 
     Exit Function
 
 Bail:
-    BrowseFolder = ""
+    ReadUnicodeLine = ""
 End Function
 
 ' --- Remembered locations ---------------------------------------------------
