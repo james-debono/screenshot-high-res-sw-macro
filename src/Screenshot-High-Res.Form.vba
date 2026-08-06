@@ -1,37 +1,43 @@
-' ===========================================================================
-' Export PNG 0.4.0 - UserForm1
+' ============================================================================
+' Export PNG
+' UserForm1 - user interface
 '
-' Paste-ready: right-click UserForm1 > View Code, select all, paste this in.
-' Do NOT import this as a .frm - that would overwrite the layout you built.
+' Collects the file name, output pixel size and background choice, displays a
+' preview of the framing, and triggers the export. All SOLIDWORKS work is done
+' in Module1.
 '
-' Controls this code expects:
+'   Version   0.4.1
+'   Author    James Debono
+'   Updated   2026-08-06
+'   License   (to be added)
+'
+' Controls
 '   Image1          preview
-'   CommandButton2  "Refresh Image"
+'   CommandButton1  Export
+'   CommandButton2  Refresh Image
 '   TextBox1        file name
-'   OptionButton1   "Transparent Background"
-'   OptionButton2   "White Background"
-'   TextBox2        Width  (pixels)
-'   TextBox3        Height (pixels)
-'   CommandButton1  "Export"
+'   TextBox2        output width in pixels
+'   TextBox3        output height in pixels
+'   OptionButton1   transparent background
+'   OptionButton2   white background
 '
-' The form is modeless, and the macro's idle loop calls AutoRefreshTick below
-' about every 10 ms. That is where the camera gets watched, so the preview
-' refreshes itself shortly after you stop moving the view. Refresh Image is
-' still there for when you want it now.
-' ===========================================================================
+' The form is modeless, and Module1's idle loop calls AutoRefreshTick roughly
+' every 10 ms. That is where the camera is watched, so the preview refreshes
+' itself shortly after the view stops moving.
+' ============================================================================
 
 Option Explicit
 
-' Set while the form is being populated, so the control events below do not
-' start rendering previews before everything is in place.
+' True while the form is being populated, so that control events do not render
+' previews before initialisation has finished.
 Private m_bLoading As Boolean
 
-' The macro idles in a DoEvents loop to stay alive while this form is open, and
-' the export itself can pump messages. Without this guard a second click part
-' way through an export would start a second one on top of the first.
+' True while an export or preview is in progress. The idle loop pumps messages
+' and the export can do the same, so without this guard a second click part way
+' through an export would start another on top of it.
 Private m_bBusy As Boolean
 
-' Camera watching
+' Camera watching state
 Private m_sLastCamera As String
 Private m_sngChangedAt As Single
 Private m_sngLastPoll As Single
@@ -40,15 +46,15 @@ Private m_bPreviewStale As Boolean
 Private Sub UserForm_Initialize()
     m_bLoading = True
 
-    ' Zoom keeps any output aspect ratio correct inside the preview box instead
-    ' of stretching it to fit
+    ' Zoom preserves the output aspect ratio inside the preview box rather than
+    ' stretching the image to fill it
     Me.Image1.PictureSizeMode = fmPictureSizeModeZoom
 
-    ' SIZE BOXES
+    ' Output size defaults. TextBox2 is width, TextBox3 is height.
     Me.TextBox2.Text = CStr(DEFAULT_WIDTH)
     Me.TextBox3.Text = CStr(DEFAULT_HEIGHT)
 
-    Me.OptionButton1.Value = True ' Transparent Background
+    Me.OptionButton1.Value = True ' transparent background
     Me.TextBox1.Text = ActiveDocName()
 
     m_bLoading = False
@@ -60,12 +66,14 @@ Private Sub UserForm_Terminate()
     ClearPreviewCache
 End Sub
 
-' --- Auto refresh -------------------------------------------------------------
-' Called from the macro's idle loop. Notices that the view has moved, waits for
-' it to settle, then refreshes once. Polling beats hooking DModelViewEvents
-' here: it survives switching documents without re-hooking, and it cannot be
-' swamped by a notification per frame during an orbit.
+' --- Auto refresh -----------------------------------------------------------
 
+' Called from Module1's idle loop. Detects that the view has moved, waits for it
+' to settle, then refreshes once.
+'
+' Polling is used in preference to hooking DModelViewEvents: it survives a
+' change of document without re-hooking, and cannot be swamped by one
+' notification per frame during an orbit.
 Public Sub AutoRefreshTick()
     Dim sNow As String
     Dim sngElapsed As Single
@@ -74,8 +82,7 @@ Public Sub AutoRefreshTick()
     If Not AUTO_REFRESH Then Exit Sub
     If m_bLoading Or m_bBusy Then Exit Sub
 
-    ' The idle loop ticks every 10 ms; reading the camera that often would be
-    ' hundreds of COM calls a second for nothing
+    ' The idle loop ticks far more often than the camera needs reading
     sngSincePoll = Timer - m_sngLastPoll
     If sngSincePoll >= 0 And sngSincePoll < POLL_SECONDS Then Exit Sub
     m_sngLastPoll = Timer
@@ -84,7 +91,7 @@ Public Sub AutoRefreshTick()
     If sNow = "" Then Exit Sub ' no document, or the view is not readable
 
     If sNow <> m_sLastCamera Then
-        ' Still moving - restart the settle clock and wait
+        ' Still moving: restart the settle clock and wait
         m_sLastCamera = sNow
         m_sngChangedAt = Timer
         m_bPreviewStale = True
@@ -100,15 +107,15 @@ Public Sub AutoRefreshTick()
     RefreshPreview True, False
 End Sub
 
-' Take the current camera as the new baseline. Called after every render,
-' because the print capture can nudge the view - without this the render would
-' look like another camera move and refresh forever.
+' Adopts the current camera as the baseline. Called after every render, because
+' the print capture can shift the view; without this the render itself would
+' register as a further camera movement and refresh indefinitely.
 Private Sub BaselineCamera()
     m_sLastCamera = CameraSignature()
     m_bPreviewStale = False
 End Sub
 
-' --- Buttons ------------------------------------------------------------------
+' --- Buttons ----------------------------------------------------------------
 
 Private Sub CommandButton2_Click() ' Refresh Image
     RefreshPreview True, True
@@ -147,8 +154,8 @@ Private Sub CommandButton1_Click() ' Export
 
     BaselineCamera
 
-    ' The form stays open on purpose now that it is modeless - reframe and
-    ' export again without reopening it.
+    ' The form is left open so that the view can be reframed and exported again
+    ' without reopening it.
     Select Case lResult
         Case EXPORT_OK
             MsgBox "Saved to:" & vbCrLf & _
@@ -162,7 +169,7 @@ Private Sub CommandButton1_Click() ' Export
                    "this macro - it has to be ticked there once and left on.", vbExclamation
 
         Case EXPORT_CANCELLED
-            ' Declined the overwrite prompt - nothing to say
+            ' Overwrite prompt declined; nothing to report
 
         Case EXPORT_NO_DOC
             MsgBox "No document is open.", vbExclamation
@@ -172,20 +179,20 @@ Private Sub CommandButton1_Click() ' Export
     End Select
 End Sub
 
-' --- Background choice --------------------------------------------------------
-' Only changes how the preview is composited, so no re-render is needed.
+' --- Background choice ------------------------------------------------------
+' Affects only how the preview is composited, so no re-render is required.
 
-Private Sub OptionButton1_Click() ' Transparent Background
+Private Sub OptionButton1_Click() ' transparent background
     RefreshPreview False, False
 End Sub
 
-Private Sub OptionButton2_Click() ' White Background
+Private Sub OptionButton2_Click() ' white background
     RefreshPreview False, False
 End Sub
 
-' --- Size boxes ---------------------------------------------------------------
-' Marked stale rather than refreshed on the spot, so the settle delay lets you
-' finish typing before anything renders.
+' --- Size boxes -------------------------------------------------------------
+' Marked stale rather than refreshed immediately, so that the settle delay
+' allows typing to finish before anything is rendered.
 
 Private Sub TextBox2_Change()
     MarkStale
@@ -202,11 +209,12 @@ Private Sub MarkStale()
     m_bPreviewStale = True
 End Sub
 
-' --- Preview ------------------------------------------------------------------
+' --- Preview ----------------------------------------------------------------
 
-' bForce  - re-render rather than just re-compositing the cached render
-' bReport - show a message box on a problem. Off for automatic refreshes, so a
-'           half typed width cannot pop a dialog while you are still typing.
+' bForce  - re-render rather than re-compositing the cached render
+' bReport - report problems in a message box. Suppressed for automatic
+'           refreshes, so a partially typed width cannot raise a dialog
+'           mid-keystroke.
 Private Sub RefreshPreview(ByVal bForce As Boolean, ByVal bReport As Boolean)
     Dim pxW As Long, pxH As Long
     Dim sBmp As String
@@ -220,8 +228,8 @@ Private Sub RefreshPreview(ByVal bForce As Boolean, ByVal bReport As Boolean)
         Exit Sub
     End If
 
-    ' Picked up here as well as at load, so opening a document after the form
-    ' still fills the name in
+    ' Also handled here, not only at load, so that opening a document after the
+    ' form still populates the name
     If Trim$(Me.TextBox1.Text) = "" Then Me.TextBox1.Text = ActiveDocName()
 
     If Not TryGetSize(pxW, pxH, bReport) Then Exit Sub
@@ -242,8 +250,8 @@ Private Sub RefreshPreview(ByVal bForce As Boolean, ByVal bReport As Boolean)
     Me.Image1.Picture = LoadPicture(sBmp)
 End Sub
 
-' Checkerboard behind a transparent export so you can see what is see-through,
-' plain white when that is what you asked for.
+' A checkerboard behind a transparent export makes the transparent areas
+' visible; a white background previews on white.
 Private Function BackgroundMode() As Long
     If Me.OptionButton1.Value Then
         BackgroundMode = BG_CHECKER
@@ -252,7 +260,7 @@ Private Function BackgroundMode() As Long
     End If
 End Function
 
-' --- Validation ---------------------------------------------------------------
+' --- Validation -------------------------------------------------------------
 
 Private Function TryGetSize(ByRef pxW As Long, ByRef pxH As Long, ByVal bReport As Boolean) As Boolean
     If Not IsValidPx(Me.TextBox2.Text) Or Not IsValidPx(Me.TextBox3.Text) Then

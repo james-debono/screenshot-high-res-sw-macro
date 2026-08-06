@@ -1,37 +1,58 @@
-' ===========================================================================
-' Export PNG 0.4.0 - Module1
+' ============================================================================
+' Export PNG
+' Module1 - export, preview rendering and SOLIDWORKS settings
 '
-' Paste-ready: open Module1 in the VBA editor, select all, paste this in.
-' (The "Attribute VB_Name" line is deliberately not here - it is managed by
-' VBA and pasting it into the code window is a syntax error.)
-' ===========================================================================
+' Exports the active part or assembly view to a PNG at a chosen pixel size,
+' with an optional transparent background and a live preview of the framing.
+'
+'   Version   0.4.1
+'   Author    James Debono
+'   Updated   2026-08-06
+'   License   (to be added)
+'
+' Requires the SOLIDWORKS and SOLIDWORKS Constant type libraries, which a
+' SOLIDWORKS macro project references by default.
+' ============================================================================
+'
+' Design notes
+'
+' Export path
+'   Everything goes through the standard SOLIDWORKS PNG exporter in Print
+'   capture mode, which is the only mode that exceeds screen resolution.
+'   Screen capture is documented as capturing "at the resolution of the screen
+'   display" and offers no image size setting.
+'
+' Pixel size
+'   The caller supplies a pixel width and height. Paper size is set to User
+'   Defined and derived from those pixels at EXPORT_DPI, so paper x DPI resolves
+'   exactly to the requested size:
+'
+'       paper inches = pixels / EXPORT_DPI
+'
+' Preview
+'   Framing depends only on the paper aspect ratio, not its absolute size. The
+'   preview uses the same paper at a much lower DPI, so it is framed identically
+'   to the full export while rendering a fraction of the pixels. It is a real
+'   render down the same path rather than a crop of the viewport, because
+'   changing the paper aspect rescales the model in the view.
+'
+' Transparency
+'   Produced by the "Remove background" option in Tools > Options > Export >
+'   TIF/PSD/JPG/PNG, which must be left ticked. That option is absent from the
+'   SOLIDWORKS API - the API help topic for that dialog lists it as "Currently
+'   not available in the SOLIDWORKS API" - and writing its registry value has no
+'   effect while SOLIDWORKS is running, as options are cached at startup and
+'   flushed on exit. Exports are therefore always transparent, and an opaque
+'   result is produced by flattening onto white afterwards.
+'
+' Form lifetime
+'   The form is modeless so the view can be manipulated while it is open. A
+'   SOLIDWORKS macro ends as soon as its entry point returns, which would
+'   destroy a modeless form immediately, so ShowSaveAsForm idles until the form
+'   closes. That idle loop also drives the camera polling behind auto refresh.
+' ============================================================================
 
 Option Explicit
-
-' --- How this works ----------------------------------------------------------
-' Everything goes through the normal SOLIDWORKS PNG exporter in Print capture
-' mode, which is the only way to exceed screen resolution.
-'
-' You give a pixel width and height. Paper size is set to User Defined and
-' worked out from those pixels at EXPORT_DPI, so paper x DPI lands exactly on
-' the size you asked for:
-'
-'     paper inches = pixels / EXPORT_DPI
-'
-' Framing depends only on the paper ASPECT RATIO, not its absolute size. The
-' preview exploits that: it uses the same paper at a much lower DPI, so it is
-' framed identically to the real export but renders a fraction of the pixels.
-'
-' Transparency comes from the "Remove background" tickbox in
-' Tools > Options > Export > TIF/PSD/JPG/PNG. That setting is not in the
-' SOLIDWORKS API and cannot be changed from a macro, so leave it TICKED. The
-' export then always comes out transparent, and White Background is produced by
-' flattening it onto white afterwards.
-'
-' The form is modeless and the macro idles in a DoEvents loop while it is open.
-' That loop also polls the camera, so the preview refreshes itself a moment
-' after you stop moving the view.
-' -----------------------------------------------------------------------------
 
 #If VBA7 Then
     Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
@@ -42,8 +63,8 @@ Option Explicit
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
 
-' DPI used for the real export. Paper size is derived from it, so this only
-' decides how big the "paper" is - the output pixel size is whatever you type.
+' DPI used for the full export. Paper size is derived from it, so this governs
+' the size of the notional paper only - output pixels are set by the caller.
 Public Const EXPORT_DPI As Long = 300
 
 Public Const DEFAULT_WIDTH As Long = 1920
@@ -51,24 +72,22 @@ Public Const DEFAULT_HEIGHT As Long = 1080
 Public Const MIN_PX As Long = 16
 Public Const MAX_PX As Long = 10000
 
-' --- Auto refresh ------------------------------------------------------------
-' Set AUTO_REFRESH to False to go back to refreshing only on the button.
-' SETTLE_SECONDS is how long the view has to sit still before a refresh fires,
-' so orbiting does not kick off a render on every frame.
+' Auto refresh. AUTO_REFRESH False reverts to refreshing on the button only.
+' SETTLE_SECONDS is how long the view must be still before a refresh fires, so
+' that an orbit does not trigger a render per frame.
 Public Const AUTO_REFRESH As Boolean = True
 Public Const SETTLE_SECONDS As Single = 0.4
 
-' How often the camera is actually read. The idle loop ticks every 10 ms, which
-' is far more often than this needs checking - reading the camera costs a
-' handful of COM calls, so it is throttled to a sane rate.
+' How often the camera is read. The idle loop ticks every IDLE_MS, far more
+' often than this needs checking, and each read costs several COM calls.
 Public Const POLL_SECONDS As Single = 0.15
 
-' Roughly how many pixels wide the preview render should be
+' Approximate width in pixels of the preview render
 Private Const PREVIEW_PX As Long = 520
 Private Const MIN_PREVIEW_DPI As Long = 6
 
-' How long the idle loop naps between message pumps. Small enough to stay
-' imperceptible while orbiting, large enough not to spin a core flat.
+' Idle loop period. Short enough to keep the view responsive, long enough that
+' the loop does not saturate a CPU core.
 Private Const IDLE_MS As Long = 10
 
 ' Background handling passed to the image helper
@@ -90,43 +109,42 @@ Dim Part As Object
 Dim boolstatus As Boolean
 Dim longstatus As Long, longwarnings As Long
 
-' Cached preview render, so changing Transparent/White only re-composites
+' Cached preview render, so a change of background only re-composites
 Private m_sPreviewPng As String
 Private m_lPreviewW As Long
 Private m_lPreviewH As Long
 
+' Entry point.
 Sub ShowSaveAsForm()
     Load UserForm1
     UserForm1.Show vbModeless
 
-    ' A SOLIDWORKS macro ends the moment this sub returns, and that takes any
-    ' modeless form down with it - which looks exactly like the form never
-    ' opening, with no error. Idling here keeps the macro alive until the form
-    ' is closed.
+    ' A SOLIDWORKS macro ends as soon as this procedure returns, which would
+    ' take the modeless form down with it before it ever painted. Idling here
+    ' keeps the macro alive until the form is closed.
     '
-    ' DoEvents hands control back to SOLIDWORKS so the view stays fully
-    ' interactive; the short Sleep stops the loop spinning a CPU core flat.
+    ' DoEvents returns control to SOLIDWORKS so the view stays interactive; the
+    ' Sleep prevents the loop from saturating a CPU core.
     Do While UserForms.Count > 0
         DoEvents
         Sleep IDLE_MS
 
-        ' Guarded because the form can be torn down between the test above and
-        ' this call
+        ' Guarded: the form can be torn down between the test above and this call
         On Error Resume Next
         UserForm1.AutoRefreshTick
         On Error GoTo 0
     Loop
 End Sub
 
-' --- Camera ------------------------------------------------------------------
+' --- Camera -----------------------------------------------------------------
 
-' A cheap fingerprint of everything that affects the framing. Compared on each
-' idle tick to notice that the view has moved.
+' Returns a fingerprint of everything affecting the framing, for comparison on
+' each idle tick. Orientation and translation cover orbit and pan, Scale2 covers
+' zoom, and the frame size covers a window resize - which alters the graphics
+' area aspect and so the framing, without the camera having moved.
 '
-' Orientation and translation cover orbit and pan, Scale2 covers zoom, and the
-' frame size covers a window resize - which changes the graphics area aspect and
-' so changes the framing even though the camera has not moved.
-' Returns "" when there is no document, which the caller treats as "skip".
+' Returns an empty string when there is no readable view, which callers treat as
+' "nothing to compare".
 Public Function CameraSignature() As String
     Dim swModel As Object
     Dim swView As Object
@@ -165,9 +183,9 @@ Bail:
     CameraSignature = ""
 End Function
 
-' --- Active document ----------------------------------------------------------
-' Re-read every time. With a modeless form the document can be opened, closed or
-' switched while the form is sitting there.
+' --- Active document --------------------------------------------------------
+' Re-read on every call. The form is modeless, so the document can be opened,
+' closed or switched while it is displayed.
 
 Public Function HasActiveDoc() As Boolean
     Set swApp = Application.SldWorks
@@ -186,7 +204,7 @@ Public Function ActiveDocName() As String
 
     sFullPath = swModel.GetPathName
     If sFullPath = "" Then
-        ActiveDocName = "NewDocument" ' not saved yet
+        ActiveDocName = "NewDocument" ' document has never been saved
         Exit Function
     End If
 
@@ -198,8 +216,9 @@ Public Function ActiveDocName() As String
     ActiveDocName = sName
 End Function
 
-' --- Export ------------------------------------------------------------------
+' --- Export -----------------------------------------------------------------
 
+' Exports to the user's Downloads folder. Returns one of the EXPORT_* constants.
 Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal pxH As Long, _
                                   ByVal bTransparent As Boolean) As Long
     Dim sPath As String
@@ -215,7 +234,6 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
 
     sPath = Environ("USERPROFILE") & "\Downloads\" & FN & ".PNG"
 
-    ' Never overwrite silently
     If FileExists(sPath) Then
         If MsgBox(FN & ".PNG already exists in your Downloads folder." & vbCrLf & vbCrLf & _
                   "Do you want to overwrite it?", _
@@ -230,8 +248,9 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
         Exit Function
     End If
 
-    ' White: flatten onto white. Transparent: leave alone, but still check that
-    ' the export actually came back with an alpha channel.
+    ' An opaque result is flattened onto white. A transparent one is left as it
+    ' is, but the file is still inspected to confirm it has an alpha channel -
+    ' its absence means "Remove background" has been switched off.
     If bTransparent Then
         lPost = RunImageHelper(sPath, sPath, BG_KEEP, 0)
     Else
@@ -239,9 +258,9 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
     End If
 
     Select Case lPost
-        Case 0 ' helper ok, source had transparency
+        Case 0 ' helper succeeded, source had transparency
             ExportToDownloads = EXPORT_OK
-        Case 1 ' helper ok, source was fully opaque
+        Case 1 ' helper succeeded, source was fully opaque
             If bTransparent Then
                 ExportToDownloads = EXPORT_NO_ALPHA
             Else
@@ -252,11 +271,12 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
     End Select
 End Function
 
-' --- Preview -----------------------------------------------------------------
+' --- Preview ----------------------------------------------------------------
 
-' Renders (or re-uses) a preview and returns the path of a BMP ready for the
-' form's Image control. Returns "" if it could not be produced.
-' VBA's LoadPicture cannot read PNG, which is why the helper emits a BMP.
+' Renders, or re-uses, a preview and returns the path of a BMP suitable for a
+' form Image control. Returns an empty string on failure.
+'
+' BMP rather than PNG because LoadPicture cannot read PNG.
 Public Function PreviewToBmp(ByVal pxW As Long, ByVal pxH As Long, ByVal lBg As Long, _
                              ByVal bForce As Boolean) As String
     Dim sBmp As String
@@ -269,8 +289,8 @@ Public Function PreviewToBmp(ByVal pxW As Long, ByVal pxH As Long, ByVal lBg As 
     If m_sPreviewPng = "" Then m_sPreviewPng = Environ("TEMP") & "\ExportPNG_preview.png"
     sBmp = Environ("TEMP") & "\ExportPNG_preview.bmp"
 
-    ' Only re-render when the size changed or a refresh was asked for. Changing
-    ' the background just re-composites the render we already have.
+    ' Re-render only when the size changed or a refresh was requested. A change
+    ' of background re-composites the existing render instead.
     If bForce Or pxW <> m_lPreviewW Or pxH <> m_lPreviewH Or Not FileExists(m_sPreviewPng) Then
         lDPI = PreviewDpi(pxW)
         If Not RenderToPng(m_sPreviewPng, pxW, pxH, lDPI) Then Exit Function
@@ -294,7 +314,7 @@ Public Sub ClearPreviewCache()
     m_lPreviewH = 0
 End Sub
 
-' Same paper, lower DPI - identical framing, far fewer pixels.
+' Same paper, lower DPI: identical framing, far fewer pixels.
 Private Function PreviewDpi(ByVal pxW As Long) As Long
     Dim lDPI As Long
 
@@ -305,32 +325,37 @@ Private Function PreviewDpi(ByVal pxW As Long) As Long
     PreviewDpi = lDPI
 End Function
 
-' --- The actual SOLIDWORKS export --------------------------------------------
+' --- SOLIDWORKS export ------------------------------------------------------
 
 Private Function RenderToPng(ByVal sPath As String, ByVal pxW As Long, ByVal pxH As Long, _
                              ByVal lDPI As Long) As Boolean
     ApplyPrintCapture pxW, pxH, lDPI
 
-    ' Deliberately no FrameState change here. The framing follows the graphics
-    ' area aspect, so resizing or maximising the window between the preview and
-    ' the export would make them disagree.
-    longstatus = Part.SaveAs3(sPath, 0, 2) ' 0 = swSaveAsCurrentVersion, 2 = swSaveAsOptions_Copy
+    ' The window state is deliberately left alone. Framing follows the graphics
+    ' area aspect, so resizing the window between a preview and an export would
+    ' make the two disagree.
+    longstatus = Part.SaveAs3(sPath, 0, 2) ' swSaveAsCurrentVersion, swSaveAsOptions_Copy
 
     RenderToPng = (longstatus = 0)
 End Function
 
-' Paper size always comes from the requested pixels at EXPORT_DPI so the aspect
-' ratio - and therefore the framing - is the same for a preview and a full
-' export. Only the DPI differs.
+' Paper size is always derived from the requested pixels at EXPORT_DPI, so the
+' aspect ratio - and therefore the framing - is identical for a preview and a
+' full export. Only the DPI differs.
 Private Sub ApplyPrintCapture(ByVal pxW As Long, ByVal pxH As Long, ByVal lDPI As Long)
     swApp.SetUserPreferenceIntegerValue swUserPreferenceIntegerValue_e.swTiffScreenOrPrintCapture, CAPTURE_PRINT
     swApp.SetUserPreferenceIntegerValue swUserPreferenceIntegerValue_e.swTiffPrintPaperSize, _
                                         swDwgPaperSizes_e.swDwgPapersUserDefined
 
-    ' NOTE: swconst gives values 8 and 9 two names each, with width and height
-    ' swapped between the pairs. These are the names the API help topic
-    ' "System Options > Export > TIF/PSD/JPG/PNG" prescribes. If an export comes
-    ' out transposed, swap these two lines - that is the whole fix.
+    ' swconst assigns preference values 8 and 9 two names each, with width and
+    ' height transposed between the pairs:
+    '
+    '   swTiffPrintPaperWidth  = 8       swTiffPrintDrawingPaperHeight = 8
+    '   swTiffPrintPaperHeight = 9       swTiffPrintDrawingPaperWidth  = 9
+    '
+    ' Only one pairing can be correct. The names below are those prescribed by
+    ' the API help topic "System Options > Export > TIF/PSD/JPG/PNG". If exports
+    ' emerge transposed, exchanging these two statements is the entire fix.
     swApp.SetUserPreferenceDoubleValue swUserPreferenceDoubleValue_e.swTiffPrintDrawingPaperWidth, _
                                        PixelsToMetres(pxW, EXPORT_DPI)
     swApp.SetUserPreferenceDoubleValue swUserPreferenceDoubleValue_e.swTiffPrintDrawingPaperHeight, _
@@ -343,13 +368,13 @@ Private Function PixelsToMetres(ByVal px As Long, ByVal lDPI As Long) As Double
     PixelsToMetres = (CDbl(px) / lDPI) * METRES_PER_INCH
 End Function
 
-' --- Image helper ------------------------------------------------------------
-' Flattens transparency, builds the checkerboard preview, converts to BMP and
-' reports whether the source had an alpha channel at all.
+' --- Image helper -----------------------------------------------------------
+' Flattens transparency, builds the checkerboard preview backdrop, converts to
+' BMP, and reports whether the source carried an alpha channel.
 '
-' Returns 0 done and the source had transparency
-'         1 done and the source was fully opaque
-'         2 helper failed
+' Returns 0 succeeded, source had transparency
+'         1 succeeded, source was fully opaque
+'         2 failed
 
 Private Function RunImageHelper(ByVal sIn As String, ByVal sOut As String, _
                                 ByVal lBg As Long, ByVal lBmp As Long) As Long
@@ -363,9 +388,12 @@ Private Function RunImageHelper(ByVal sIn As String, ByVal sOut As String, _
                                " -Bg " & lBg & " -Bmp " & lBmp)
 End Function
 
-' Written out at run time so the macro stays self contained. The inner loop is
-' compiled C# via Add-Type - a per pixel PowerShell loop is far too slow at
-' 3000x3000. Deliberately contains no double quotes, so it needs no escaping.
+' Emitted at run time so the macro remains self contained, with no companion
+' files to deploy. The per pixel loop is compiled C# via Add-Type, as an
+' equivalent PowerShell loop is prohibitively slow at 3000x3000.
+'
+' The script contains no double quote characters, so it requires no escaping
+' here. Preserve that property when editing it.
 Private Sub WriteImageHelper(ByVal sPath As String)
     Dim iFile As Integer
 
@@ -437,21 +465,22 @@ Private Sub WriteImageHelper(ByVal sPath As String)
     Close #iFile
 End Sub
 
-' --- Small helpers -----------------------------------------------------------
+' --- Utilities --------------------------------------------------------------
 
 Private Function RunHidden(ByVal sCmd As String) As Long
     Dim wsh As Object
 
     Set wsh = CreateObject("WScript.Shell")
-    RunHidden = wsh.Run(sCmd, 0, True) ' 0 = hidden window, True = wait for it
+    RunHidden = wsh.Run(sCmd, 0, True) ' hidden window, wait for completion
 End Function
 
 Private Function Quote(ByVal s As String) As String
     Quote = Chr(34) & s & Chr(34)
 End Function
 
-' Dir raises an error rather than returning "" on a malformed name, so a bad
-' file name falls through to the export and gets reported as a failure.
+' Dir raises an error rather than returning an empty string when given a
+' malformed name, so an invalid file name falls through to the export and is
+' reported there as a failure.
 Private Function FileExists(ByVal sPath As String) As Boolean
     On Error Resume Next
     FileExists = (Dir(sPath) <> "")
