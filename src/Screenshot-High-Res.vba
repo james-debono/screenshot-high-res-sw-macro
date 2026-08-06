@@ -6,7 +6,7 @@
 ' location, with an optional transparent background and a live preview of the
 ' framing.
 '
-'   Version   0.5.0
+'   Version   0.5.1
 '   Author    James Debono
 '   Updated   2026-08-06
 '   License   (to be added)
@@ -50,7 +50,8 @@
 '   A folder is chosen on the form and remembered between sessions, along with a
 '   short list of recently used folders. MODEL_FOLDER_TOKEN is a reserved list
 '   entry meaning "beside the active document". SOLIDWORKS exposes no folder
-'   picker - only file dialogs - so browsing uses Shell.Application.
+'   picker, only file dialogs, so Browse uses ISldWorks::GetOpenFileName and
+'   takes the folder from the selected file - see BrowseFolder.
 '
 ' Form lifetime
 '   The form is modeless so the view can be manipulated while it is open. A
@@ -233,23 +234,50 @@ Public Function CreateFolderTree(ByVal sPath As String) As Boolean
     CreateFolderTree = fso.FolderExists(sPath)
 End Function
 
-' SOLIDWORKS provides file dialogs but no folder picker, so this comes from the
-' shell. Flags: &H1 filesystem folders only, &H10 editable path box,
-' &H40 modern dialog. The dialog always opens at the desktop root - the recent
-' list on the form is what makes repeat use quick.
-Public Function BrowseFolder(ByVal sTitle As String) As String
-    Dim oShell As Object
-    Dim oFolder As Object
+' Uses ISldWorks::GetOpenFileName, the same dialog SOLIDWORKS opens files with,
+' so the macro looks native rather than raising the shell's folder tree.
+'
+' It is a file dialog, not a folder dialog - SOLIDWORKS exposes no folder
+' picker. The folder is therefore taken from whatever file is selected, and the
+' dialog is seeded with the current location and file name so it opens in the
+' right place with a name already filled in.
+'
+' Consequence: selecting from a completely empty folder depends on the dialog
+' accepting the seeded name rather than insisting on an existing file. If it
+' will not, the path can still be typed or pasted into the box on the form.
+'
+' Returns the folder, or an empty string if cancelled.
+Public Function BrowseFolder(ByVal sTitle As String, ByVal sStartFolder As String, _
+                             ByVal sSuggestedName As String) As String
+    Dim sPicked As String
+    Dim sInitial As String
+    Dim lOptions As Long
+    Dim sConfig As String
+    Dim sDisplay As String
+    Dim lSlash As Long
 
-    On Error Resume Next
+    Set swApp = Application.SldWorks
 
-    Set oShell = CreateObject("Shell.Application")
-    Set oFolder = oShell.BrowseForFolder(0, sTitle, &H51)
+    If sSuggestedName = "" Then sSuggestedName = "image"
+    If sStartFolder <> "" Then sInitial = sStartFolder & "\" & sSuggestedName & ".PNG"
 
-    If Not oFolder Is Nothing Then BrowseFolder = oFolder.Self.Path
+    On Error GoTo Bail
 
-    Err.Clear
-    On Error GoTo 0
+    ' OpenOptions, ConfigName and DisplayName are all ByRef and unused here, but
+    ' must still be passed as variables rather than literals
+    sPicked = swApp.GetOpenFileName(sTitle, sInitial, _
+                                    "PNG Files (*.png)|*.png|All Files (*.*)|*.*", _
+                                    lOptions, sConfig, sDisplay)
+
+    If sPicked = "" Then Exit Function ' cancelled
+
+    lSlash = InStrRev(sPicked, "\")
+    If lSlash > 1 Then BrowseFolder = Left$(sPicked, lSlash - 1)
+
+    Exit Function
+
+Bail:
+    BrowseFolder = ""
 End Function
 
 ' --- Remembered locations ---------------------------------------------------

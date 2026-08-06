@@ -6,7 +6,7 @@
 ' choice, displays a preview of the framing, and triggers the export. All
 ' SOLIDWORKS work is done in Module1.
 '
-'   Version   0.5.0
+'   Version   0.5.1
 '   Author    James Debono
 '   Updated   2026-08-06
 '   License   (to be added)
@@ -111,13 +111,20 @@ End Function
 
 Private Sub CommandButton3_Click() ' Browse
     Dim sPicked As String
+    Dim sStart As String
 
     If m_bBusy Then Exit Sub
+
+    ' Seeded with wherever the box currently points, so the dialog opens there
+    ' rather than at some unrelated default
+    sStart = ResolveSaveFolder(Trim$(Me.ComboBox1.Text))
+    If Not FolderExists(sStart) Then sStart = DefaultSaveFolder()
 
     ' Held for the duration of the dialog, otherwise an automatic refresh can
     ' fire underneath it - the idle loop keeps running while it is open
     m_bBusy = True
-    sPicked = BrowseFolder("Choose where to save the exported image")
+    sPicked = BrowseFolder("Choose where to save the exported image", _
+                           sStart, Trim$(Me.TextBox1.Text))
     m_bBusy = False
 
     If sPicked = "" Then Exit Sub ' cancelled
