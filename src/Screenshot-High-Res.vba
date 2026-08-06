@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.0 - Module1
+' Export PNG 0.3.1 - Module1
 '
 ' Paste-ready: open Module1 in the VBA editor, select all, paste this in.
 ' (The "Attribute VB_Name" line is deliberately not here - it is managed by
@@ -29,6 +29,10 @@ Option Explicit
 ' flattening it onto white afterwards. If you pick Transparent and the file
 ' comes back opaque, the macro tells you that tickbox has been turned off
 ' rather than silently handing you a white rectangle.
+'
+' The form is shown MODELESS so you can orbit and zoom with it open, then hit
+' Refresh Image to see the new framing. Everything therefore re-reads the
+' active document each time rather than caching it at load.
 ' -----------------------------------------------------------------------------
 
 Public Const CAPTURE_SCREEN As Long = 0
@@ -52,6 +56,13 @@ Public Const BG_KEEP As Long = 0
 Public Const BG_WHITE As Long = 1
 Public Const BG_CHECKER As Long = 2
 
+' ExportToDownloads results
+Public Const EXPORT_OK As Long = 0
+Public Const EXPORT_NO_ALPHA As Long = 1
+Public Const EXPORT_CANCELLED As Long = 2
+Public Const EXPORT_FAILED As Long = 3
+Public Const EXPORT_NO_DOC As Long = 4
+
 Private Const METRES_PER_INCH As Double = 0.0254
 
 Dim swApp As Object
@@ -65,15 +76,46 @@ Private m_lPreviewW As Long
 Private m_lPreviewH As Long
 
 Sub ShowSaveAsForm()
-    ' This sub will display your form
+    ' Modeless, so the model can still be orbited while the form is open
     Load UserForm1
-    UserForm1.Show
+    UserForm1.Show vbModeless
 End Sub
+
+' --- Active document ----------------------------------------------------------
+' Re-read every time. With a modeless form the document can be opened, closed or
+' switched while the form is sitting there.
+
+Public Function HasActiveDoc() As Boolean
+    Set swApp = Application.SldWorks
+    HasActiveDoc = Not (swApp.ActiveDoc Is Nothing)
+End Function
+
+Public Function ActiveDocName() As String
+    Dim swModel As Object
+    Dim sFullPath As String
+    Dim sName As String
+    Dim lDot As Long
+
+    Set swApp = Application.SldWorks
+    Set swModel = swApp.ActiveDoc
+    If swModel Is Nothing Then Exit Function
+
+    sFullPath = swModel.GetPathName
+    If sFullPath = "" Then
+        ActiveDocName = "NewDocument" ' not saved yet
+        Exit Function
+    End If
+
+    ' Strip the extension, then everything up to the last backslash
+    lDot = InStrRev(sFullPath, ".")
+    If lDot > 0 Then sName = Left(sFullPath, lDot - 1) Else sName = sFullPath
+    sName = Mid(sName, InStrRev(sName, "\") + 1)
+
+    ActiveDocName = sName
+End Function
 
 ' --- Export ------------------------------------------------------------------
 
-' Returns 0 exported, 1 exported but transparency was expected and missing,
-' 2 cancelled at the overwrite prompt, 3 failed.
 Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal pxH As Long, _
                                   ByVal bTransparent As Boolean) As Long
     Dim sPath As String
@@ -83,7 +125,7 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
     Set Part = swApp.ActiveDoc
 
     If Part Is Nothing Then
-        ExportToDownloads = 3
+        ExportToDownloads = EXPORT_NO_DOC
         Exit Function
     End If
 
@@ -94,13 +136,13 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
         If MsgBox(FN & ".PNG already exists in your Downloads folder." & vbCrLf & vbCrLf & _
                   "Do you want to overwrite it?", _
                   vbQuestion + vbYesNo + vbDefaultButton2, "File Already Exists") <> vbYes Then
-            ExportToDownloads = 2
+            ExportToDownloads = EXPORT_CANCELLED
             Exit Function
         End If
     End If
 
     If Not RenderToPng(sPath, pxW, pxH, EXPORT_DPI) Then
-        ExportToDownloads = 3
+        ExportToDownloads = EXPORT_FAILED
         Exit Function
     End If
 
@@ -114,11 +156,15 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
 
     Select Case lPost
         Case 0 ' helper ok, source had transparency
-            ExportToDownloads = 0
+            ExportToDownloads = EXPORT_OK
         Case 1 ' helper ok, source was fully opaque
-            If bTransparent Then ExportToDownloads = 1 Else ExportToDownloads = 0
+            If bTransparent Then
+                ExportToDownloads = EXPORT_NO_ALPHA
+            Else
+                ExportToDownloads = EXPORT_OK
+            End If
         Case Else
-            ExportToDownloads = 3
+            ExportToDownloads = EXPORT_FAILED
     End Select
 End Function
 

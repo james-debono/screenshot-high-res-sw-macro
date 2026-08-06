@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.0 - UserForm1
+' Export PNG 0.3.1 - UserForm1
 '
 ' Paste-ready: right-click UserForm1 > View Code, select all, paste this in.
 ' Do NOT import this as a .frm - that would overwrite the layout you built.
@@ -14,9 +14,9 @@
 '   TextBox3        Height (pixels)
 '   CommandButton1  "Export"
 '
-' Width and Height default to 1920 x 1080 on open. If those land in the wrong
-' boxes then TextBox2/TextBox3 are the other way round on your form - swap the
-' two lines marked SIZE BOXES below and everything else follows.
+' The form is modeless, so you can orbit and zoom with it open and then hit
+' Refresh Image to see the new framing. Nothing about the document is cached at
+' load - open, close or switch documents freely while it is up.
 ' ===========================================================================
 
 Option Explicit
@@ -26,13 +26,7 @@ Option Explicit
 Private m_bLoading As Boolean
 
 Private Sub UserForm_Initialize()
-    Dim swApp As Object
-    Dim swModel As Object
-
     m_bLoading = True
-
-    Set swApp = Application.SldWorks
-    Set swModel = swApp.ActiveDoc
 
     ' Zoom keeps any output aspect ratio correct inside the preview box instead
     ' of stretching it to fit
@@ -43,26 +37,7 @@ Private Sub UserForm_Initialize()
     Me.TextBox3.Text = CStr(DEFAULT_HEIGHT)
 
     Me.OptionButton1.Value = True ' Transparent Background
-
-    If Not swModel Is Nothing Then
-        Dim sFullPath As String
-        sFullPath = swModel.GetPathName
-
-        If sFullPath <> "" Then
-            ' Extract only the filename from the full path
-            Dim sFileNameNoExtension As String
-            sFileNameNoExtension = Left(sFullPath, InStrRev(sFullPath, ".") - 1) ' Remove extension first
-            sFileNameNoExtension = Mid(sFileNameNoExtension, InStrRev(sFileNameNoExtension, "\") + 1) ' Get name after last backslash
-
-            Me.TextBox1.Text = sFileNameNoExtension
-        Else
-            Me.TextBox1.Text = "NewDocument" ' Default if not saved yet
-        End If
-    Else
-        Me.TextBox1.Text = "NoDocumentOpen"
-        Me.CommandButton1.Enabled = False ' Disable buttons if no doc is open
-        Me.CommandButton2.Enabled = False
-    End If
+    Me.TextBox1.Text = ActiveDocName()
 
     m_bLoading = False
 
@@ -86,6 +61,11 @@ Private Sub CommandButton1_Click() ' Export
     Dim sName As String
     Dim lResult As Long
 
+    If Not HasActiveDoc() Then
+        MsgBox "No document is open.", vbExclamation
+        Exit Sub
+    End If
+
     sName = Trim$(Me.TextBox1.Text)
 
     If sName = "" Then
@@ -103,23 +83,25 @@ Private Sub CommandButton1_Click() ' Export
     lResult = ExportToDownloads(sName, pxW, pxH, Me.OptionButton1.Value)
     Me.MousePointer = fmMousePointerDefault
 
+    ' The form stays open on purpose now that it is modeless - reframe and
+    ' export again without reopening it.
     Select Case lResult
-        Case 0
+        Case EXPORT_OK
             MsgBox "Saved to:" & vbCrLf & _
                    Environ("USERPROFILE") & "\Downloads\" & sName & ".PNG", vbInformation
-            Unload Me
 
-        Case 1
-            ' Exported fine, but Transparent was asked for and the file is opaque
+        Case EXPORT_NO_ALPHA
             MsgBox "Exported, but the image has no transparent background." & vbCrLf & vbCrLf & _
                    "Tick 'Remove background' in Tools > Options > System Options > " & _
                    "Export > TIF/PSD/JPG/PNG." & vbCrLf & vbCrLf & _
                    "That option is not in the SOLIDWORKS API, so it cannot be set from " & _
                    "this macro - it has to be ticked there once and left on.", vbExclamation
-            Unload Me
 
-        Case 2
-            ' Cancelled at the overwrite prompt - leave the form open
+        Case EXPORT_CANCELLED
+            ' Declined the overwrite prompt - nothing to say
+
+        Case EXPORT_NO_DOC
+            MsgBox "No document is open.", vbExclamation
 
         Case Else
             MsgBox "Export failed.", vbExclamation
@@ -144,7 +126,17 @@ Private Sub RefreshPreview(ByVal bForce As Boolean)
     Dim sBmp As String
 
     If m_bLoading Then Exit Sub
-    If Not Me.CommandButton2.Enabled Then Exit Sub
+
+    If Not HasActiveDoc() Then
+        Me.Image1.Picture = LoadPicture("")
+        If bForce Then MsgBox "No document is open.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Picked up here as well as at load, so opening a document after the form
+    ' still fills the name in
+    If Trim$(Me.TextBox1.Text) = "" Then Me.TextBox1.Text = ActiveDocName()
+
     If Not TryGetSize(pxW, pxH, bForce) Then Exit Sub
 
     Me.MousePointer = fmMousePointerHourGlass
