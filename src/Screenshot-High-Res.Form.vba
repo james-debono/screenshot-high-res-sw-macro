@@ -1,29 +1,28 @@
 ' ===========================================================================
-' Export PNG 0.2.1 - UserForm1
+' Export PNG 0.3.0 - UserForm1
 '
 ' Paste-ready: right-click UserForm1 > View Code, select all, paste this in.
 ' Do NOT import this as a .frm - that would overwrite the layout you built.
 '
-' Controls this code expects (the names already on the 0.2.0 form):
+' Controls this code expects:
+'   Image1          preview
+'   CommandButton2  "Refresh Image"
 '   TextBox1        file name
-'   Label1          "File Name"
+'   OptionButton1   "Transparent Background"
+'   OptionButton2   "White Background"
+'   TextBox2        Width  (pixels)
+'   TextBox3        Height (pixels)
 '   CommandButton1  "Export"
-'   OptionButton1   "Screen Capture"
-'   OptionButton2   "Print Capture"
-'   ComboBox1       DPI
-'   Label2          "DPI"
-'   CheckBox1       "Remove Background"
 '
-' The three setting controls are a shortcut to Tools > Options > Export >
-' TIF/PSD/JPG/PNG. They show what SOLIDWORKS is currently set to when the form
-' opens, and each one is written back the moment it is changed - so closing the
-' form without exporting still leaves the setting changed.
+' Width and Height default to 1920 x 1080 on open. If those land in the wrong
+' boxes then TextBox2/TextBox3 are the other way round on your form - swap the
+' two lines marked SIZE BOXES below and everything else follows.
 ' ===========================================================================
 
 Option Explicit
 
 ' Set while the form is being populated, so the control events below do not
-' write the settings straight back while they are still being loaded.
+' start rendering previews before everything is in place.
 Private m_bLoading As Boolean
 
 Private Sub UserForm_Initialize()
@@ -35,9 +34,15 @@ Private Sub UserForm_Initialize()
     Set swApp = Application.SldWorks
     Set swModel = swApp.ActiveDoc
 
-    ' Fill the form from the current PNG export settings
-    PopulateDpiList
-    LoadExportSettings
+    ' Zoom keeps any output aspect ratio correct inside the preview box instead
+    ' of stretching it to fit
+    Me.Image1.PictureSizeMode = fmPictureSizeModeZoom
+
+    ' SIZE BOXES
+    Me.TextBox2.Text = CStr(DEFAULT_WIDTH)
+    Me.TextBox3.Text = CStr(DEFAULT_HEIGHT)
+
+    Me.OptionButton1.Value = True ' Transparent Background
 
     If Not swModel Is Nothing Then
         Dim sFullPath As String
@@ -55,125 +60,138 @@ Private Sub UserForm_Initialize()
         End If
     Else
         Me.TextBox1.Text = "NoDocumentOpen"
-        Me.CommandButton1.Enabled = False ' Disable button if no doc is open
+        Me.CommandButton1.Enabled = False ' Disable buttons if no doc is open
+        Me.CommandButton2.Enabled = False
     End If
 
     m_bLoading = False
 
-    UpdateCaptureControls
+    ' Comment this line out if opening the form ever feels slow - the Refresh
+    ' Image button does exactly the same thing on demand.
+    RefreshPreview True
 End Sub
 
-Private Sub CommandButton1_Click()
-    If Trim$(Me.TextBox1.Text) = "" Then
+Private Sub UserForm_Terminate()
+    ClearPreviewCache
+End Sub
+
+' --- Buttons ------------------------------------------------------------------
+
+Private Sub CommandButton2_Click() ' Refresh Image
+    RefreshPreview True
+End Sub
+
+Private Sub CommandButton1_Click() ' Export
+    Dim pxW As Long, pxH As Long
+    Dim sName As String
+    Dim lResult As Long
+
+    sName = Trim$(Me.TextBox1.Text)
+
+    If sName = "" Then
         MsgBox "Please enter a file name.", vbExclamation
         Me.TextBox1.SetFocus
         Exit Sub
     End If
 
-    ' Print capture is the only mode that uses the DPI, so make sure it is usable
-    If Me.OptionButton2.Value Then
-        If Not IsValidDpi(Me.ComboBox1.Value) Then
-            MsgBox "DPI must be a number between " & MIN_DPI & " and " & MAX_DPI & ".", vbExclamation
-            Me.ComboBox1.SetFocus
-            Exit Sub
-        End If
+    If Not TryGetSize(pxW, pxH, True) Then
+        Me.TextBox2.SetFocus
+        Exit Sub
     End If
 
-    ' The settings have already been applied as they were changed, so this only
-    ' has to do the export. The form stays open if it did not happen.
-    If SaveAsPNG(Trim$(Me.TextBox1.Text)) Then Unload Me
+    Me.MousePointer = fmMousePointerHourGlass
+    lResult = ExportToDownloads(sName, pxW, pxH, Me.OptionButton1.Value)
+    Me.MousePointer = fmMousePointerDefault
+
+    Select Case lResult
+        Case 0
+            MsgBox "Saved to:" & vbCrLf & _
+                   Environ("USERPROFILE") & "\Downloads\" & sName & ".PNG", vbInformation
+            Unload Me
+
+        Case 1
+            ' Exported fine, but Transparent was asked for and the file is opaque
+            MsgBox "Exported, but the image has no transparent background." & vbCrLf & vbCrLf & _
+                   "Tick 'Remove background' in Tools > Options > System Options > " & _
+                   "Export > TIF/PSD/JPG/PNG." & vbCrLf & vbCrLf & _
+                   "That option is not in the SOLIDWORKS API, so it cannot be set from " & _
+                   "this macro - it has to be ticked there once and left on.", vbExclamation
+            Unload Me
+
+        Case 2
+            ' Cancelled at the overwrite prompt - leave the form open
+
+        Case Else
+            MsgBox "Export failed.", vbExclamation
+    End Select
 End Sub
 
-' --- Setting controls - each one applies immediately --------------------------
+' --- Background choice --------------------------------------------------------
+' Only changes how the preview is composited, so no re-render is needed.
 
-Private Sub OptionButton1_Click()
-    If m_bLoading Then Exit Sub
-
-    SetCaptureMode True ' Screen capture
-    UpdateCaptureControls
+Private Sub OptionButton1_Click() ' Transparent Background
+    RefreshPreview False
 End Sub
 
-Private Sub OptionButton2_Click()
-    If m_bLoading Then Exit Sub
-
-    SetCaptureMode False ' Print capture
-    UpdateCaptureControls
+Private Sub OptionButton2_Click() ' White Background
+    RefreshPreview False
 End Sub
 
-Private Sub ComboBox1_Change()
+' --- Preview ------------------------------------------------------------------
+
+Private Sub RefreshPreview(ByVal bForce As Boolean)
+    Dim pxW As Long, pxH As Long
+    Dim sBmp As String
+
     If m_bLoading Then Exit Sub
+    If Not Me.CommandButton2.Enabled Then Exit Sub
+    If Not TryGetSize(pxW, pxH, bForce) Then Exit Sub
 
-    ' Ignore half typed values rather than pushing nonsense into the settings
-    If IsValidDpi(Me.ComboBox1.Value) Then SetExportDPI CLng(Me.ComboBox1.Value)
-End Sub
+    Me.MousePointer = fmMousePointerHourGlass
+    sBmp = PreviewToBmp(pxW, pxH, BackgroundMode(), bForce)
+    Me.MousePointer = fmMousePointerDefault
 
-Private Sub CheckBox1_Click()
-    If m_bLoading Then Exit Sub
-
-    If Not SetRemoveBackground(Me.CheckBox1.Value = True) Then
-        MsgBox "Could not write the Remove Background setting." & vbCrLf & vbCrLf & _
-               "This option has no SOLIDWORKS API, so the macro writes it straight " & _
-               "to the registry, and that write was refused.", vbExclamation
+    If sBmp = "" Then
+        Me.Image1.Picture = LoadPicture("")
+        Exit Sub
     End If
+
+    Me.Image1.Picture = LoadPicture(sBmp)
 End Sub
 
-' --- Helpers ------------------------------------------------------------------
-
-' The DPI values offered by the SOLIDWORKS export options dialog.
-Private Sub PopulateDpiList()
-    Dim vDPI As Variant
-    Dim i As Long
-
-    vDPI = Array(72, 96, 150, 200, 300, 400, 600)
-
-    Me.ComboBox1.Clear
-    For i = LBound(vDPI) To UBound(vDPI)
-        Me.ComboBox1.AddItem CStr(vDPI(i))
-    Next i
-End Sub
-
-' Reads the current export settings and shows them on the form.
-Private Sub LoadExportSettings()
-    Dim lDPI As Long
-
-    If GetCaptureMode() = CAPTURE_SCREEN Then
-        Me.OptionButton1.Value = True
+' Checkerboard behind a transparent export so you can see what is see-through,
+' plain white when that is what you asked for.
+Private Function BackgroundMode() As Long
+    If Me.OptionButton1.Value Then
+        BackgroundMode = BG_CHECKER
     Else
-        Me.OptionButton2.Value = True
+        BackgroundMode = BG_WHITE
+    End If
+End Function
+
+' --- Validation ---------------------------------------------------------------
+
+Private Function TryGetSize(ByRef pxW As Long, ByRef pxH As Long, ByVal bReport As Boolean) As Boolean
+    If Not IsValidPx(Me.TextBox2.Text) Or Not IsValidPx(Me.TextBox3.Text) Then
+        If bReport Then
+            MsgBox "Width and Height must be whole numbers between " & _
+                   MIN_PX & " and " & MAX_PX & " pixels.", vbExclamation
+        End If
+        Exit Function
     End If
 
-    lDPI = GetExportDPI()
-    If lDPI < MIN_DPI Or lDPI > MAX_DPI Then lDPI = 300
+    pxW = CLng(Me.TextBox2.Text)
+    pxH = CLng(Me.TextBox3.Text)
 
-    If Not DpiInList(lDPI) Then Me.ComboBox1.AddItem CStr(lDPI)
-    Me.ComboBox1.Value = CStr(lDPI)
-
-    Me.CheckBox1.Value = GetRemoveBackground()
-End Sub
-
-Private Function IsValidDpi(ByVal vValue As Variant) As Boolean
-    If Not IsNumeric(vValue) Then Exit Function
-
-    IsValidDpi = (CLng(vValue) >= MIN_DPI And CLng(vValue) <= MAX_DPI)
+    TryGetSize = True
 End Function
 
-Private Function DpiInList(ByVal lDPI As Long) As Boolean
-    Dim i As Long
+Private Function IsValidPx(ByVal s As String) As Boolean
+    s = Trim$(s)
 
-    For i = 0 To Me.ComboBox1.ListCount - 1
-        If Me.ComboBox1.List(i) = CStr(lDPI) Then
-            DpiInList = True
-            Exit Function
-        End If
-    Next i
+    If s = "" Then Exit Function
+    If Not IsNumeric(s) Then Exit Function
+    If InStr(s, ".") > 0 Or InStr(s, ",") > 0 Then Exit Function
+
+    IsValidPx = (CLng(s) >= MIN_PX And CLng(s) <= MAX_PX)
 End Function
-
-' DPI only applies to a print capture, so grey it out for a screen capture.
-Private Sub UpdateCaptureControls()
-    Dim bPrintCapture As Boolean
-
-    bPrintCapture = Me.OptionButton2.Value
-
-    Me.ComboBox1.Enabled = bPrintCapture
-    Me.Label2.Enabled = bPrintCapture
-End Sub
