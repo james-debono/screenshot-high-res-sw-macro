@@ -2,11 +2,11 @@
 ' Export PNG
 ' UserForm1 - user interface
 '
-' Collects the file name, output pixel size and background choice, displays a
-' preview of the framing, and triggers the export. All SOLIDWORKS work is done
-' in Module1.
+' Collects the save location, file name, output pixel size and background
+' choice, displays a preview of the framing, and triggers the export. All
+' SOLIDWORKS work is done in Module1.
 '
-'   Version   0.4.1
+'   Version   0.5.0
 '   Author    James Debono
 '   Updated   2026-08-06
 '   License   (to be added)
@@ -15,6 +15,8 @@
 '   Image1          preview
 '   CommandButton1  Export
 '   CommandButton2  Refresh Image
+'   CommandButton3  Browse
+'   ComboBox1       save location
 '   TextBox1        file name
 '   TextBox2        output width in pixels
 '   TextBox3        output height in pixels
@@ -32,9 +34,10 @@ Option Explicit
 ' previews before initialisation has finished.
 Private m_bLoading As Boolean
 
-' True while an export or preview is in progress. The idle loop pumps messages
-' and the export can do the same, so without this guard a second click part way
-' through an export would start another on top of it.
+' True while an export, preview or dialog is in progress. The idle loop pumps
+' messages and the export can do the same, so without this guard a second click
+' part way through would start another operation on top of the first - and an
+' automatic refresh could fire underneath the Browse dialog.
 Private m_bBusy As Boolean
 
 ' Camera watching state
@@ -57,6 +60,8 @@ Private Sub UserForm_Initialize()
     Me.OptionButton1.Value = True ' transparent background
     Me.TextBox1.Text = ActiveDocName()
 
+    PopulateLocations
+
     m_bLoading = False
 
     RefreshPreview True, False
@@ -65,6 +70,105 @@ End Sub
 Private Sub UserForm_Terminate()
     ClearPreviewCache
 End Sub
+
+' --- Save location ----------------------------------------------------------
+
+' The reserved model folder entry first, then recently used folders, then the
+' Downloads default if it is not already present.
+Private Sub PopulateLocations()
+    Dim vRecent As Variant
+    Dim sLast As String
+    Dim i As Long
+
+    ' Editable, so a path can be typed or pasted as well as picked
+    Me.ComboBox1.Style = fmStyleDropDownCombo
+    Me.ComboBox1.Clear
+
+    Me.ComboBox1.AddItem MODEL_FOLDER_TOKEN
+
+    vRecent = Split(RecentFolders(), "|")
+    For i = LBound(vRecent) To UBound(vRecent)
+        If vRecent(i) <> "" Then Me.ComboBox1.AddItem vRecent(i)
+    Next i
+
+    If Not LocationInList(DefaultSaveFolder()) Then Me.ComboBox1.AddItem DefaultSaveFolder()
+
+    sLast = LastLocationChoice()
+    If Trim$(sLast) = "" Then sLast = DefaultSaveFolder()
+    Me.ComboBox1.Text = sLast
+End Sub
+
+Private Function LocationInList(ByVal sPath As String) As Boolean
+    Dim i As Long
+
+    For i = 0 To Me.ComboBox1.ListCount - 1
+        If StrComp(Me.ComboBox1.List(i), sPath, vbTextCompare) = 0 Then
+            LocationInList = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Sub CommandButton3_Click() ' Browse
+    Dim sPicked As String
+
+    If m_bBusy Then Exit Sub
+
+    ' Held for the duration of the dialog, otherwise an automatic refresh can
+    ' fire underneath it - the idle loop keeps running while it is open
+    m_bBusy = True
+    sPicked = BrowseFolder("Choose where to save the exported image")
+    m_bBusy = False
+
+    If sPicked = "" Then Exit Sub ' cancelled
+
+    If Not LocationInList(sPicked) Then Me.ComboBox1.AddItem sPicked
+    Me.ComboBox1.Text = sPicked
+End Sub
+
+' Resolves the chosen location to a real folder, offering to create it if it
+' does not exist. Returns "" if it could not be settled, having already
+' explained why.
+Private Function SettleSaveFolder() As String
+    Dim sChoice As String
+    Dim sFolder As String
+
+    sChoice = Trim$(Me.ComboBox1.Text)
+
+    If sChoice = "" Then
+        MsgBox "Please choose a save location.", vbExclamation
+        Me.ComboBox1.SetFocus
+        Exit Function
+    End If
+
+    sFolder = ResolveSaveFolder(sChoice)
+
+    If sFolder = "" Then
+        If StrComp(sChoice, MODEL_FOLDER_TOKEN, vbTextCompare) = 0 Then
+            MsgBox "The active document has not been saved yet, so it has no " & _
+                   "folder to export beside." & vbCrLf & vbCrLf & _
+                   "Save the document first, or choose another location.", vbExclamation
+        Else
+            MsgBox "That save location could not be understood.", vbExclamation
+            Me.ComboBox1.SetFocus
+        End If
+        Exit Function
+    End If
+
+    If Not FolderExists(sFolder) Then
+        If MsgBox("This folder does not exist:" & vbCrLf & sFolder & vbCrLf & vbCrLf & _
+                  "Create it?", vbQuestion + vbYesNo, "Folder Not Found") <> vbYes Then
+            Exit Function
+        End If
+
+        If Not CreateFolderTree(sFolder) Then
+            MsgBox "That folder could not be created:" & vbCrLf & sFolder, vbExclamation
+            Exit Function
+        End If
+    End If
+
+    SettleSaveFolder = sFolder
+End Function
 
 ' --- Auto refresh -----------------------------------------------------------
 
@@ -124,6 +228,7 @@ End Sub
 Private Sub CommandButton1_Click() ' Export
     Dim pxW As Long, pxH As Long
     Dim sName As String
+    Dim sFolder As String
     Dim lResult As Long
 
     If m_bBusy Then Exit Sub
@@ -146,9 +251,16 @@ Private Sub CommandButton1_Click() ' Export
         Exit Sub
     End If
 
+    ' Settled before any rendering, so a bad path fails immediately rather than
+    ' after a full size export
+    m_bBusy = True
+    sFolder = SettleSaveFolder()
+    m_bBusy = False
+    If sFolder = "" Then Exit Sub
+
     m_bBusy = True
     Me.MousePointer = fmMousePointerHourGlass
-    lResult = ExportToDownloads(sName, pxW, pxH, Me.OptionButton1.Value)
+    lResult = ExportToFolder(sFolder, sName, pxW, pxH, Me.OptionButton1.Value)
     Me.MousePointer = fmMousePointerDefault
     m_bBusy = False
 
@@ -157,16 +269,18 @@ Private Sub CommandButton1_Click() ' Export
     ' The form is left open so that the view can be reframed and exported again
     ' without reopening it.
     Select Case lResult
-        Case EXPORT_OK
-            MsgBox "Saved to:" & vbCrLf & _
-                   Environ("USERPROFILE") & "\Downloads\" & sName & ".PNG", vbInformation
+        Case EXPORT_OK, EXPORT_NO_ALPHA
+            RememberLocation sFolder
 
-        Case EXPORT_NO_ALPHA
-            MsgBox "Exported, but the image has no transparent background." & vbCrLf & vbCrLf & _
-                   "Tick 'Remove background' in Tools > Options > System Options > " & _
-                   "Export > TIF/PSD/JPG/PNG." & vbCrLf & vbCrLf & _
-                   "That option is not in the SOLIDWORKS API, so it cannot be set from " & _
-                   "this macro - it has to be ticked there once and left on.", vbExclamation
+            If lResult = EXPORT_OK Then
+                MsgBox "Saved to:" & vbCrLf & sFolder & "\" & sName & ".PNG", vbInformation
+            Else
+                MsgBox "Exported, but the image has no transparent background." & vbCrLf & vbCrLf & _
+                       "Tick 'Remove background' in Tools > Options > System Options > " & _
+                       "Export > TIF/PSD/JPG/PNG." & vbCrLf & vbCrLf & _
+                       "That option is not in the SOLIDWORKS API, so it cannot be set from " & _
+                       "this macro - it has to be ticked there once and left on.", vbExclamation
+            End If
 
         Case EXPORT_CANCELLED
             ' Overwrite prompt declined; nothing to report
@@ -177,6 +291,19 @@ Private Sub CommandButton1_Click() ' Export
         Case Else
             MsgBox "Export failed.", vbExclamation
     End Select
+End Sub
+
+' Stores the choice as typed, so the model folder entry is remembered as such,
+' and the resolved folder in the recent list.
+Private Sub RememberLocation(ByVal sFolder As String)
+    Dim sChoice As String
+
+    sChoice = Trim$(Me.ComboBox1.Text)
+    SaveLastLocationChoice sChoice
+
+    If StrComp(sChoice, MODEL_FOLDER_TOKEN, vbTextCompare) <> 0 Then
+        PushRecentFolder sFolder
+    End If
 End Sub
 
 ' --- Background choice ------------------------------------------------------

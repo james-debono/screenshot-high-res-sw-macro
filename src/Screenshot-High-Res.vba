@@ -2,10 +2,11 @@
 ' Export PNG
 ' Module1 - export, preview rendering and SOLIDWORKS settings
 '
-' Exports the active part or assembly view to a PNG at a chosen pixel size,
-' with an optional transparent background and a live preview of the framing.
+' Exports the active part or assembly view to a PNG at a chosen pixel size and
+' location, with an optional transparent background and a live preview of the
+' framing.
 '
-'   Version   0.4.1
+'   Version   0.5.0
 '   Author    James Debono
 '   Updated   2026-08-06
 '   License   (to be added)
@@ -45,6 +46,12 @@
 '   flushed on exit. Exports are therefore always transparent, and an opaque
 '   result is produced by flattening onto white afterwards.
 '
+' Save location
+'   A folder is chosen on the form and remembered between sessions, along with a
+'   short list of recently used folders. MODEL_FOLDER_TOKEN is a reserved list
+'   entry meaning "beside the active document". SOLIDWORKS exposes no folder
+'   picker - only file dialogs - so browsing uses Shell.Application.
+'
 ' Form lifetime
 '   The form is modeless so the view can be manipulated while it is open. A
 '   SOLIDWORKS macro ends as soon as its entry point returns, which would
@@ -72,6 +79,9 @@ Public Const DEFAULT_HEIGHT As Long = 1080
 Public Const MIN_PX As Long = 16
 Public Const MAX_PX As Long = 10000
 
+' Reserved entry in the location list meaning "the active document's folder"
+Public Const MODEL_FOLDER_TOKEN As String = "<Model folder>"
+
 ' Auto refresh. AUTO_REFRESH False reverts to refreshing on the button only.
 ' SETTLE_SECONDS is how long the view must be still before a refresh fires, so
 ' that an orbit does not trigger a render per frame.
@@ -90,12 +100,17 @@ Private Const MIN_PREVIEW_DPI As Long = 6
 ' the loop does not saturate a CPU core.
 Private Const IDLE_MS As Long = 10
 
+' Stored settings, written under the standard VB and VBA program settings key
+Private Const SETTINGS_APP As String = "Export PNG"
+Private Const SETTINGS_SECTION As String = "Locations"
+Private Const MAX_RECENT As Long = 8
+
 ' Background handling passed to the image helper
 Public Const BG_KEEP As Long = 0
 Public Const BG_WHITE As Long = 1
 Public Const BG_CHECKER As Long = 2
 
-' ExportToDownloads results
+' ExportToFolder results
 Public Const EXPORT_OK As Long = 0
 Public Const EXPORT_NO_ALPHA As Long = 1
 Public Const EXPORT_CANCELLED As Long = 2
@@ -136,52 +151,147 @@ Sub ShowSaveAsForm()
     Loop
 End Sub
 
-' --- Camera -----------------------------------------------------------------
+' --- Save location ----------------------------------------------------------
 
-' Returns a fingerprint of everything affecting the framing, for comparison on
-' each idle tick. Orientation and translation cover orbit and pan, Scale2 covers
-' zoom, and the frame size covers a window resize - which alters the graphics
-' area aspect and so the framing, without the camera having moved.
-'
-' Returns an empty string when there is no readable view, which callers treat as
-' "nothing to compare".
-Public Function CameraSignature() As String
-    Dim swModel As Object
-    Dim swView As Object
-    Dim vOrient As Variant
-    Dim vTrans As Variant
-    Dim i As Long
-    Dim s As String
-
-    Set swApp = Application.SldWorks
-    Set swModel = swApp.ActiveDoc
-    If swModel Is Nothing Then Exit Function
-
-    Set swView = swModel.ActiveView
-    If swView Is Nothing Then Exit Function
-
-    On Error GoTo Bail
-
-    vOrient = swView.Orientation2
-    vTrans = swView.Translation2
-
-    For i = LBound(vOrient) To UBound(vOrient)
-        s = s & Format$(vOrient(i), "0.000000") & ";"
-    Next i
-
-    For i = LBound(vTrans) To UBound(vTrans)
-        s = s & Format$(vTrans(i), "0.000000") & ";"
-    Next i
-
-    s = s & Format$(swView.Scale2, "0.000000") & ";"
-    s = s & swView.FrameWidth & "x" & swView.FrameHeight
-
-    CameraSignature = s
-    Exit Function
-
-Bail:
-    CameraSignature = ""
+Public Function DefaultSaveFolder() As String
+    DefaultSaveFolder = Environ("USERPROFILE") & "\Downloads"
 End Function
+
+' Turns a list entry into an actual folder path. Returns an empty string if it
+' cannot be resolved - either nothing was chosen, or MODEL_FOLDER_TOKEN was
+' chosen with no document open or a document that has never been saved.
+Public Function ResolveSaveFolder(ByVal sChoice As String) As String
+    Dim swModel As Object
+    Dim sPath As String
+    Dim lSlash As Long
+
+    sChoice = Trim$(sChoice)
+    If sChoice = "" Then Exit Function
+
+    If StrComp(sChoice, MODEL_FOLDER_TOKEN, vbTextCompare) = 0 Then
+        Set swApp = Application.SldWorks
+        Set swModel = swApp.ActiveDoc
+        If swModel Is Nothing Then Exit Function
+
+        sPath = swModel.GetPathName
+        If sPath = "" Then Exit Function ' never saved, so it has no folder yet
+
+        lSlash = InStrRev(sPath, "\")
+        If lSlash > 1 Then ResolveSaveFolder = Left$(sPath, lSlash - 1)
+        Exit Function
+    End If
+
+    ' Drop a trailing separator so callers can append one unconditionally.
+    ' Length 3 is a drive root such as C:\, which keeps its separator.
+    If Right$(sChoice, 1) = "\" And Len(sChoice) > 3 Then
+        sChoice = Left$(sChoice, Len(sChoice) - 1)
+    End If
+
+    ResolveSaveFolder = sChoice
+End Function
+
+Public Function FolderExists(ByVal sPath As String) As Boolean
+    Dim fso As Object
+
+    If Trim$(sPath) = "" Then Exit Function
+
+    On Error Resume Next
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    FolderExists = fso.FolderExists(sPath)
+    If Err.Number <> 0 Then
+        Err.Clear
+        FolderExists = False
+    End If
+    On Error GoTo 0
+End Function
+
+' Creates a folder and any missing parents. Returns True if it exists afterwards.
+Public Function CreateFolderTree(ByVal sPath As String) As Boolean
+    Dim fso As Object
+    Dim sParent As String
+
+    If Trim$(sPath) = "" Then Exit Function
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If fso.FolderExists(sPath) Then
+        CreateFolderTree = True
+        Exit Function
+    End If
+
+    On Error Resume Next
+    sParent = fso.GetParentFolderName(sPath)
+    On Error GoTo 0
+
+    If sParent = "" Or StrComp(sParent, sPath, vbTextCompare) = 0 Then Exit Function
+    If Not CreateFolderTree(sParent) Then Exit Function
+
+    On Error Resume Next
+    fso.CreateFolder sPath
+    Err.Clear
+    On Error GoTo 0
+
+    CreateFolderTree = fso.FolderExists(sPath)
+End Function
+
+' SOLIDWORKS provides file dialogs but no folder picker, so this comes from the
+' shell. Flags: &H1 filesystem folders only, &H10 editable path box,
+' &H40 modern dialog. The dialog always opens at the desktop root - the recent
+' list on the form is what makes repeat use quick.
+Public Function BrowseFolder(ByVal sTitle As String) As String
+    Dim oShell As Object
+    Dim oFolder As Object
+
+    On Error Resume Next
+
+    Set oShell = CreateObject("Shell.Application")
+    Set oFolder = oShell.BrowseForFolder(0, sTitle, &H51)
+
+    If Not oFolder Is Nothing Then BrowseFolder = oFolder.Self.Path
+
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+' --- Remembered locations ---------------------------------------------------
+' Stored with SaveSetting/GetSetting, which needs no registry code. "Last" is
+' the raw list entry last exported to, so the token is remembered as such;
+' "Recent" is a bar separated list of real folder paths.
+
+Public Function LastLocationChoice() As String
+    LastLocationChoice = GetSetting(SETTINGS_APP, SETTINGS_SECTION, "Last", "")
+End Function
+
+Public Sub SaveLastLocationChoice(ByVal sChoice As String)
+    SaveSetting SETTINGS_APP, SETTINGS_SECTION, "Last", sChoice
+End Sub
+
+Public Function RecentFolders() As String
+    RecentFolders = GetSetting(SETTINGS_APP, SETTINGS_SECTION, "Recent", "")
+End Function
+
+' Moves a folder to the front of the recent list, de-duplicating and trimming.
+Public Sub PushRecentFolder(ByVal sFolder As String)
+    Dim vParts As Variant
+    Dim sOut As String
+    Dim lCount As Long
+    Dim i As Long
+
+    If Trim$(sFolder) = "" Then Exit Sub
+
+    sOut = sFolder
+    lCount = 1
+
+    vParts = Split(RecentFolders(), "|")
+    For i = LBound(vParts) To UBound(vParts)
+        If lCount >= MAX_RECENT Then Exit For
+        If vParts(i) <> "" And StrComp(vParts(i), sFolder, vbTextCompare) <> 0 Then
+            sOut = sOut & "|" & vParts(i)
+            lCount = lCount + 1
+        End If
+    Next i
+
+    SaveSetting SETTINGS_APP, SETTINGS_SECTION, "Recent", sOut
+End Sub
 
 ' --- Active document --------------------------------------------------------
 ' Re-read on every call. The form is modeless, so the document can be opened,
@@ -218,9 +328,12 @@ End Function
 
 ' --- Export -----------------------------------------------------------------
 
-' Exports to the user's Downloads folder. Returns one of the EXPORT_* constants.
-Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal pxH As Long, _
-                                  ByVal bTransparent As Boolean) As Long
+' sFolder must already be resolved and known to exist; the form does that so it
+' can offer to create a missing folder before any rendering happens.
+' Returns one of the EXPORT_* constants.
+Public Function ExportToFolder(ByVal sFolder As String, ByVal FN As String, _
+                               ByVal pxW As Long, ByVal pxH As Long, _
+                               ByVal bTransparent As Boolean) As Long
     Dim sPath As String
     Dim lPost As Long
 
@@ -228,23 +341,23 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
     Set Part = swApp.ActiveDoc
 
     If Part Is Nothing Then
-        ExportToDownloads = EXPORT_NO_DOC
+        ExportToFolder = EXPORT_NO_DOC
         Exit Function
     End If
 
-    sPath = Environ("USERPROFILE") & "\Downloads\" & FN & ".PNG"
+    sPath = sFolder & "\" & FN & ".PNG"
 
     If FileExists(sPath) Then
-        If MsgBox(FN & ".PNG already exists in your Downloads folder." & vbCrLf & vbCrLf & _
+        If MsgBox(FN & ".PNG already exists in:" & vbCrLf & sFolder & vbCrLf & vbCrLf & _
                   "Do you want to overwrite it?", _
                   vbQuestion + vbYesNo + vbDefaultButton2, "File Already Exists") <> vbYes Then
-            ExportToDownloads = EXPORT_CANCELLED
+            ExportToFolder = EXPORT_CANCELLED
             Exit Function
         End If
     End If
 
     If Not RenderToPng(sPath, pxW, pxH, EXPORT_DPI) Then
-        ExportToDownloads = EXPORT_FAILED
+        ExportToFolder = EXPORT_FAILED
         Exit Function
     End If
 
@@ -259,15 +372,15 @@ Public Function ExportToDownloads(ByVal FN As String, ByVal pxW As Long, ByVal p
 
     Select Case lPost
         Case 0 ' helper succeeded, source had transparency
-            ExportToDownloads = EXPORT_OK
+            ExportToFolder = EXPORT_OK
         Case 1 ' helper succeeded, source was fully opaque
             If bTransparent Then
-                ExportToDownloads = EXPORT_NO_ALPHA
+                ExportToFolder = EXPORT_NO_ALPHA
             Else
-                ExportToDownloads = EXPORT_OK
+                ExportToFolder = EXPORT_OK
             End If
         Case Else
-            ExportToDownloads = EXPORT_FAILED
+            ExportToFolder = EXPORT_FAILED
     End Select
 End Function
 
@@ -275,6 +388,9 @@ End Function
 
 ' Renders, or re-uses, a preview and returns the path of a BMP suitable for a
 ' form Image control. Returns an empty string on failure.
+'
+' Previews always go to the temp folder, so the chosen save location has no
+' bearing on them and a bad path cannot break the preview.
 '
 ' BMP rather than PNG because LoadPicture cannot read PNG.
 Public Function PreviewToBmp(ByVal pxW As Long, ByVal pxH As Long, ByVal lBg As Long, _
@@ -366,6 +482,53 @@ End Sub
 
 Private Function PixelsToMetres(ByVal px As Long, ByVal lDPI As Long) As Double
     PixelsToMetres = (CDbl(px) / lDPI) * METRES_PER_INCH
+End Function
+
+' --- Camera -----------------------------------------------------------------
+
+' Returns a fingerprint of everything affecting the framing, for comparison on
+' each idle tick. Orientation and translation cover orbit and pan, Scale2 covers
+' zoom, and the frame size covers a window resize - which alters the graphics
+' area aspect and so the framing, without the camera having moved.
+'
+' Returns an empty string when there is no readable view, which callers treat as
+' "nothing to compare".
+Public Function CameraSignature() As String
+    Dim swModel As Object
+    Dim swView As Object
+    Dim vOrient As Variant
+    Dim vTrans As Variant
+    Dim i As Long
+    Dim s As String
+
+    Set swApp = Application.SldWorks
+    Set swModel = swApp.ActiveDoc
+    If swModel Is Nothing Then Exit Function
+
+    Set swView = swModel.ActiveView
+    If swView Is Nothing Then Exit Function
+
+    On Error GoTo Bail
+
+    vOrient = swView.Orientation2
+    vTrans = swView.Translation2
+
+    For i = LBound(vOrient) To UBound(vOrient)
+        s = s & Format$(vOrient(i), "0.000000") & ";"
+    Next i
+
+    For i = LBound(vTrans) To UBound(vTrans)
+        s = s & Format$(vTrans(i), "0.000000") & ";"
+    Next i
+
+    s = s & Format$(swView.Scale2, "0.000000") & ";"
+    s = s & swView.FrameWidth & "x" & swView.FrameHeight
+
+    CameraSignature = s
+    Exit Function
+
+Bail:
+    CameraSignature = ""
 End Function
 
 ' --- Image helper -----------------------------------------------------------
