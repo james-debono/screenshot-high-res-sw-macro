@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.2 - UserForm1
+' Export PNG 0.4.0 - UserForm1
 '
 ' Paste-ready: right-click UserForm1 > View Code, select all, paste this in.
 ' Do NOT import this as a .frm - that would overwrite the layout you built.
@@ -14,9 +14,10 @@
 '   TextBox3        Height (pixels)
 '   CommandButton1  "Export"
 '
-' The form is modeless, so you can orbit and zoom with it open and then hit
-' Refresh Image to see the new framing. Nothing about the document is cached at
-' load - open, close or switch documents freely while it is up.
+' The form is modeless, and the macro's idle loop calls AutoRefreshTick below
+' about every 10 ms. That is where the camera gets watched, so the preview
+' refreshes itself shortly after you stop moving the view. Refresh Image is
+' still there for when you want it now.
 ' ===========================================================================
 
 Option Explicit
@@ -29,6 +30,12 @@ Private m_bLoading As Boolean
 ' the export itself can pump messages. Without this guard a second click part
 ' way through an export would start a second one on top of the first.
 Private m_bBusy As Boolean
+
+' Camera watching
+Private m_sLastCamera As String
+Private m_sngChangedAt As Single
+Private m_sngLastPoll As Single
+Private m_bPreviewStale As Boolean
 
 Private Sub UserForm_Initialize()
     m_bLoading = True
@@ -46,19 +53,65 @@ Private Sub UserForm_Initialize()
 
     m_bLoading = False
 
-    ' Comment this line out if opening the form ever feels slow - the Refresh
-    ' Image button does exactly the same thing on demand.
-    RefreshPreview True
+    RefreshPreview True, False
 End Sub
 
 Private Sub UserForm_Terminate()
     ClearPreviewCache
 End Sub
 
+' --- Auto refresh -------------------------------------------------------------
+' Called from the macro's idle loop. Notices that the view has moved, waits for
+' it to settle, then refreshes once. Polling beats hooking DModelViewEvents
+' here: it survives switching documents without re-hooking, and it cannot be
+' swamped by a notification per frame during an orbit.
+
+Public Sub AutoRefreshTick()
+    Dim sNow As String
+    Dim sngElapsed As Single
+    Dim sngSincePoll As Single
+
+    If Not AUTO_REFRESH Then Exit Sub
+    If m_bLoading Or m_bBusy Then Exit Sub
+
+    ' The idle loop ticks every 10 ms; reading the camera that often would be
+    ' hundreds of COM calls a second for nothing
+    sngSincePoll = Timer - m_sngLastPoll
+    If sngSincePoll >= 0 And sngSincePoll < POLL_SECONDS Then Exit Sub
+    m_sngLastPoll = Timer
+
+    sNow = CameraSignature()
+    If sNow = "" Then Exit Sub ' no document, or the view is not readable
+
+    If sNow <> m_sLastCamera Then
+        ' Still moving - restart the settle clock and wait
+        m_sLastCamera = sNow
+        m_sngChangedAt = Timer
+        m_bPreviewStale = True
+        Exit Sub
+    End If
+
+    If Not m_bPreviewStale Then Exit Sub
+
+    sngElapsed = Timer - m_sngChangedAt
+    If sngElapsed < 0 Then sngElapsed = SETTLE_SECONDS ' Timer wrapped at midnight
+    If sngElapsed < SETTLE_SECONDS Then Exit Sub
+
+    RefreshPreview True, False
+End Sub
+
+' Take the current camera as the new baseline. Called after every render,
+' because the print capture can nudge the view - without this the render would
+' look like another camera move and refresh forever.
+Private Sub BaselineCamera()
+    m_sLastCamera = CameraSignature()
+    m_bPreviewStale = False
+End Sub
+
 ' --- Buttons ------------------------------------------------------------------
 
 Private Sub CommandButton2_Click() ' Refresh Image
-    RefreshPreview True
+    RefreshPreview True, True
 End Sub
 
 Private Sub CommandButton1_Click() ' Export
@@ -92,6 +145,8 @@ Private Sub CommandButton1_Click() ' Export
     Me.MousePointer = fmMousePointerDefault
     m_bBusy = False
 
+    BaselineCamera
+
     ' The form stays open on purpose now that it is modeless - reframe and
     ' export again without reopening it.
     Select Case lResult
@@ -121,16 +176,38 @@ End Sub
 ' Only changes how the preview is composited, so no re-render is needed.
 
 Private Sub OptionButton1_Click() ' Transparent Background
-    RefreshPreview False
+    RefreshPreview False, False
 End Sub
 
 Private Sub OptionButton2_Click() ' White Background
-    RefreshPreview False
+    RefreshPreview False, False
+End Sub
+
+' --- Size boxes ---------------------------------------------------------------
+' Marked stale rather than refreshed on the spot, so the settle delay lets you
+' finish typing before anything renders.
+
+Private Sub TextBox2_Change()
+    MarkStale
+End Sub
+
+Private Sub TextBox3_Change()
+    MarkStale
+End Sub
+
+Private Sub MarkStale()
+    If m_bLoading Then Exit Sub
+
+    m_sngChangedAt = Timer
+    m_bPreviewStale = True
 End Sub
 
 ' --- Preview ------------------------------------------------------------------
 
-Private Sub RefreshPreview(ByVal bForce As Boolean)
+' bForce  - re-render rather than just re-compositing the cached render
+' bReport - show a message box on a problem. Off for automatic refreshes, so a
+'           half typed width cannot pop a dialog while you are still typing.
+Private Sub RefreshPreview(ByVal bForce As Boolean, ByVal bReport As Boolean)
     Dim pxW As Long, pxH As Long
     Dim sBmp As String
 
@@ -139,7 +216,7 @@ Private Sub RefreshPreview(ByVal bForce As Boolean)
 
     If Not HasActiveDoc() Then
         Me.Image1.Picture = LoadPicture("")
-        If bForce Then MsgBox "No document is open.", vbExclamation
+        If bReport Then MsgBox "No document is open.", vbExclamation
         Exit Sub
     End If
 
@@ -147,13 +224,15 @@ Private Sub RefreshPreview(ByVal bForce As Boolean)
     ' still fills the name in
     If Trim$(Me.TextBox1.Text) = "" Then Me.TextBox1.Text = ActiveDocName()
 
-    If Not TryGetSize(pxW, pxH, bForce) Then Exit Sub
+    If Not TryGetSize(pxW, pxH, bReport) Then Exit Sub
 
     m_bBusy = True
     Me.MousePointer = fmMousePointerHourGlass
     sBmp = PreviewToBmp(pxW, pxH, BackgroundMode(), bForce)
     Me.MousePointer = fmMousePointerDefault
     m_bBusy = False
+
+    BaselineCamera
 
     If sBmp = "" Then
         Me.Image1.Picture = LoadPicture("")

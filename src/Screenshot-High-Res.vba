@@ -1,5 +1,5 @@
 ' ===========================================================================
-' Export PNG 0.3.2 - Module1
+' Export PNG 0.4.0 - Module1
 '
 ' Paste-ready: open Module1 in the VBA editor, select all, paste this in.
 ' (The "Attribute VB_Name" line is deliberately not here - it is managed by
@@ -26,13 +26,11 @@ Option Explicit
 ' Tools > Options > Export > TIF/PSD/JPG/PNG. That setting is not in the
 ' SOLIDWORKS API and cannot be changed from a macro, so leave it TICKED. The
 ' export then always comes out transparent, and White Background is produced by
-' flattening it onto white afterwards. If you pick Transparent and the file
-' comes back opaque, the macro tells you that tickbox has been turned off
-' rather than silently handing you a white rectangle.
+' flattening it onto white afterwards.
 '
-' The form is shown MODELESS so you can orbit and zoom with it open, then hit
-' Refresh Image to see the new framing. Everything therefore re-reads the
-' active document each time rather than caching it at load.
+' The form is modeless and the macro idles in a DoEvents loop while it is open.
+' That loop also polls the camera, so the preview refreshes itself a moment
+' after you stop moving the view.
 ' -----------------------------------------------------------------------------
 
 #If VBA7 Then
@@ -52,6 +50,18 @@ Public Const DEFAULT_WIDTH As Long = 1920
 Public Const DEFAULT_HEIGHT As Long = 1080
 Public Const MIN_PX As Long = 16
 Public Const MAX_PX As Long = 10000
+
+' --- Auto refresh ------------------------------------------------------------
+' Set AUTO_REFRESH to False to go back to refreshing only on the button.
+' SETTLE_SECONDS is how long the view has to sit still before a refresh fires,
+' so orbiting does not kick off a render on every frame.
+Public Const AUTO_REFRESH As Boolean = True
+Public Const SETTLE_SECONDS As Single = 0.4
+
+' How often the camera is actually read. The idle loop ticks every 10 ms, which
+' is far more often than this needs checking - reading the camera costs a
+' handful of COM calls, so it is throttled to a sane rate.
+Public Const POLL_SECONDS As Single = 0.15
 
 ' Roughly how many pixels wide the preview render should be
 Private Const PREVIEW_PX As Long = 520
@@ -99,8 +109,61 @@ Sub ShowSaveAsForm()
     Do While UserForms.Count > 0
         DoEvents
         Sleep IDLE_MS
+
+        ' Guarded because the form can be torn down between the test above and
+        ' this call
+        On Error Resume Next
+        UserForm1.AutoRefreshTick
+        On Error GoTo 0
     Loop
 End Sub
+
+' --- Camera ------------------------------------------------------------------
+
+' A cheap fingerprint of everything that affects the framing. Compared on each
+' idle tick to notice that the view has moved.
+'
+' Orientation and translation cover orbit and pan, Scale2 covers zoom, and the
+' frame size covers a window resize - which changes the graphics area aspect and
+' so changes the framing even though the camera has not moved.
+' Returns "" when there is no document, which the caller treats as "skip".
+Public Function CameraSignature() As String
+    Dim swModel As Object
+    Dim swView As Object
+    Dim vOrient As Variant
+    Dim vTrans As Variant
+    Dim i As Long
+    Dim s As String
+
+    Set swApp = Application.SldWorks
+    Set swModel = swApp.ActiveDoc
+    If swModel Is Nothing Then Exit Function
+
+    Set swView = swModel.ActiveView
+    If swView Is Nothing Then Exit Function
+
+    On Error GoTo Bail
+
+    vOrient = swView.Orientation2
+    vTrans = swView.Translation2
+
+    For i = LBound(vOrient) To UBound(vOrient)
+        s = s & Format$(vOrient(i), "0.000000") & ";"
+    Next i
+
+    For i = LBound(vTrans) To UBound(vTrans)
+        s = s & Format$(vTrans(i), "0.000000") & ";"
+    Next i
+
+    s = s & Format$(swView.Scale2, "0.000000") & ";"
+    s = s & swView.FrameWidth & "x" & swView.FrameHeight
+
+    CameraSignature = s
+    Exit Function
+
+Bail:
+    CameraSignature = ""
+End Function
 
 ' --- Active document ----------------------------------------------------------
 ' Re-read every time. With a modeless form the document can be opened, closed or
