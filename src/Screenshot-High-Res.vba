@@ -1,19 +1,76 @@
-' ============================================================================
-' Export PNG
-' Module1 - export, preview rendering and SOLIDWORKS settings
+'==============================================================================
+' Screenshot HD
 '
-' Exports the active part or assembly view to a PNG at a chosen pixel size and
-' location, with an optional transparent background and a live preview of the
-' framing.
+' Exports the current view of a part or assembly to a PNG at any pixel size you
+' ask for, with a live preview of exactly what will be captured.
 '
-'   Version   0.5.2
+' SOLIDWORKS can already export images, but not comfortably. Screen capture is
+' capped at your monitor resolution. Print capture beats that, but is expressed
+' in DPI and paper sizes rather than pixels. You cannot see what area will be
+' captured before exporting, and the transparent background option cannot be
+' changed per export.
+'
+' This gives a width and height in pixels, a preview of the real framing, a
+' transparent or white background per export, and a save location that remembers
+' where you have been.
+'
+' The form is modeless, so you can orbit and zoom while it is open and the
+' preview catches up a moment after the view settles. It does not close after
+' exporting - close it with the X, which is what ends the macro.
+'
+' Requires "Remove background" to be ticked in Tools > Options > System Options >
+' Export > TIF/PSD/JPG/PNG, and left ticked. That option is absent from the
+' SOLIDWORKS API, so the macro cannot set it. Leaving it on costs nothing: a
+' white background is produced by flattening afterwards, and the macro warns if
+' it finds the option has been switched off.
+'
+' To use, open a part or assembly and run the macro.
+'
+'   Version   0.6.1
+'   Date      2026-08-13
 '   Author    James Debono
-'   Updated   2026-08-06
-'   License   (to be added)
+'   Licence   MIT - full text below
+'   Source    https://github.com/james-debono/solidworks-screenshot-hd
 '
 ' Requires the SOLIDWORKS and SOLIDWORKS Constant type libraries, which a
 ' SOLIDWORKS macro project references by default.
-' ============================================================================
+'
+'------------------------------------------------------------------------------
+' CHANGELOG (summary - see CHANGELOG.md for the full history)
+'
+'   0.6.1   Version shown in the form's title bar.
+'   0.6.0   Renamed from "Export PNG" to "Screenshot HD". Licence and header.
+'   0.5.x   Save location with recent folders; Windows folder picker; fixed the
+'           macro never ending after the form was closed.
+'   0.4.x   Pixel-size output, live preview, transparent or white background.
+'   0.3.x   Modeless form and the idle loop that keeps it alive.
+'   0.2.x   Export settings wired to the form.
+'   0.1.0   Initial version. File name and Export.
+'
+'------------------------------------------------------------------------------
+' MIT Licence
+' SPDX-License-Identifier: MIT
+'
+' Copyright (c) 2026 James Debono
+'
+' Permission is hereby granted, free of charge, to any person obtaining a copy
+' of this software and associated documentation files (the "Software"), to deal
+' in the Software without restriction, including without limitation the rights
+' to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+' copies of the Software, and to permit persons to whom the Software is
+' furnished to do so, subject to the following conditions:
+'
+' The above copyright notice and this permission notice shall be included in all
+' copies or substantial portions of the Software.
+'
+' THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+' IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+' FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+' AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+' LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+' OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+' SOFTWARE.
+'==============================================================================
 '
 ' Design notes
 '
@@ -58,7 +115,7 @@
 '   SOLIDWORKS macro ends as soon as its entry point returns, which would
 '   destroy a modeless form immediately, so ShowSaveAsForm idles until the form
 '   closes. That idle loop also drives the camera polling behind auto refresh.
-' ============================================================================
+'==============================================================================
 
 Option Explicit
 
@@ -67,6 +124,10 @@ Option Explicit
 #Else
     Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
 #End If
+
+' Must match the Version line in the header block above. build-library.ps1 checks
+' that they agree and fails the build if they drift. Shown in the form's title bar.
+Public Const MACRO_VERSION As String = "0.6.1"
 
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
@@ -102,7 +163,7 @@ Private Const MIN_PREVIEW_DPI As Long = 6
 Private Const IDLE_MS As Long = 10
 
 ' Stored settings, written under the standard VB and VBA program settings key
-Private Const SETTINGS_APP As String = "Export PNG"
+Private Const SETTINGS_APP As String = "Screenshot HD"
 Private Const SETTINGS_SECTION As String = "Locations"
 Private Const MAX_RECENT As Long = 8
 
@@ -130,8 +191,23 @@ Private m_sPreviewPng As String
 Private m_lPreviewW As Long
 Private m_lPreviewH As Long
 
+' Set by UserForm1 as it opens and closes. The idle loop below must key off this
+' rather than off UserForm1 itself - see ShowSaveAsForm for why.
+Public FormIsOpen As Boolean
+
 ' Entry point.
 Sub ShowSaveAsForm()
+    ' Clear anything left loaded by a previous run that was stopped rather than
+    ' closed. Guarded by the count so that an unnecessary Unload cannot itself
+    ' create a form.
+    If UserForms.Count > 0 Then
+        On Error Resume Next
+        Unload UserForm1
+        On Error GoTo 0
+    End If
+
+    FormIsOpen = True
+
     Load UserForm1
     UserForm1.Show vbModeless
 
@@ -141,15 +217,26 @@ Sub ShowSaveAsForm()
     '
     ' DoEvents returns control to SOLIDWORKS so the view stays interactive; the
     ' Sleep prevents the loop from saturating a CPU core.
-    Do While UserForms.Count > 0
+    '
+    ' The exit condition is the flag the form sets, and the flag is re-tested
+    ' before each call below. Referring to UserForm1 is what ends the loop's
+    ' life, not what sustains it: touching a default instance re-creates it, so
+    ' calling AutoRefreshTick after the form has closed silently loads a fresh
+    ' hidden copy, puts UserForms.Count back to 1 and leaves this loop running
+    ' forever - with an invisible form still polling the camera and rendering.
+    ' That is what happened in 0.4.0 to 0.5.2, and it left the macro running
+    ' after the window was closed, locking the file against editing.
+    Do While FormIsOpen And UserForms.Count > 0
         DoEvents
-        Sleep IDLE_MS
+        If Not FormIsOpen Then Exit Do
 
-        ' Guarded: the form can be torn down between the test above and this call
-        On Error Resume Next
+        Sleep IDLE_MS
+        If Not FormIsOpen Then Exit Do
+
         UserForm1.AutoRefreshTick
-        On Error GoTo 0
     Loop
+
+    FormIsOpen = False
 End Sub
 
 ' --- Save location ----------------------------------------------------------
@@ -255,8 +342,8 @@ Public Function BrowseFolder(ByVal sTitle As String, ByVal sStartFolder As Strin
     Dim sResult As String
     Dim lRc As Long
 
-    sScript = Environ("TEMP") & "\ExportPNG_pick.ps1"
-    sResult = Environ("TEMP") & "\ExportPNG_pick.txt"
+    sScript = Environ("TEMP") & "\ScreenshotHD_pick.ps1"
+    sResult = Environ("TEMP") & "\ScreenshotHD_pick.txt"
 
     On Error Resume Next
     Kill sResult
@@ -550,8 +637,8 @@ Public Function PreviewToBmp(ByVal pxW As Long, ByVal pxH As Long, ByVal lBg As 
     Set Part = swApp.ActiveDoc
     If Part Is Nothing Then Exit Function
 
-    If m_sPreviewPng = "" Then m_sPreviewPng = Environ("TEMP") & "\ExportPNG_preview.png"
-    sBmp = Environ("TEMP") & "\ExportPNG_preview.bmp"
+    If m_sPreviewPng = "" Then m_sPreviewPng = Environ("TEMP") & "\ScreenshotHD_preview.png"
+    sBmp = Environ("TEMP") & "\ScreenshotHD_preview.bmp"
 
     ' Re-render only when the size changed or a refresh was requested. A change
     ' of background re-composites the existing render instead.
@@ -570,7 +657,7 @@ End Function
 Public Sub ClearPreviewCache()
     On Error Resume Next
     If m_sPreviewPng <> "" Then Kill m_sPreviewPng
-    Kill Environ("TEMP") & "\ExportPNG_preview.bmp"
+    Kill Environ("TEMP") & "\ScreenshotHD_preview.bmp"
     On Error GoTo 0
 
     m_sPreviewPng = ""
@@ -691,7 +778,7 @@ Private Function RunImageHelper(ByVal sIn As String, ByVal sOut As String, _
                                 ByVal lBg As Long, ByVal lBmp As Long) As Long
     Dim sScript As String
 
-    sScript = Environ("TEMP") & "\ExportPNG_post.ps1"
+    sScript = Environ("TEMP") & "\ScreenshotHD_post.ps1"
     WriteImageHelper sScript
 
     RunImageHelper = RunHidden("powershell.exe -NoProfile -ExecutionPolicy Bypass -File " & _

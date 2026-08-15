@@ -1,15 +1,15 @@
-' ============================================================================
-' Export PNG
-' UserForm1 - user interface
+'==============================================================================
+' Screenshot HD - user interface
 '
 ' Collects the save location, file name, output pixel size and background
 ' choice, displays a preview of the framing, and triggers the export. All
-' SOLIDWORKS work is done in Module1.
+' SOLIDWORKS work is done in the main module.
 '
-'   Version   0.5.2
+'   Version   0.6.1
+'   Date      2026-08-13
 '   Author    James Debono
-'   Updated   2026-08-06
-'   License   (to be added)
+'   Licence   MIT - full text in the header of the main module
+'   Source    https://github.com/james-debono/solidworks-screenshot-hd
 '
 ' Controls
 '   Image1          preview
@@ -23,10 +23,10 @@
 '   OptionButton1   transparent background
 '   OptionButton2   white background
 '
-' The form is modeless, and Module1's idle loop calls AutoRefreshTick roughly
-' every 10 ms. That is where the camera is watched, so the preview refreshes
-' itself shortly after the view stops moving.
-' ============================================================================
+' The form is modeless, and the main module's idle loop calls AutoRefreshTick
+' roughly every 10 ms. That is where the camera is watched, so the preview
+' refreshes itself shortly after the view stops moving.
+'==============================================================================
 
 Option Explicit
 
@@ -47,7 +47,12 @@ Private m_sngLastPoll As Single
 Private m_bPreviewStale As Boolean
 
 Private Sub UserForm_Initialize()
+    FormIsOpen = True
     m_bLoading = True
+
+    ' Shown in the form's title bar, so the version is visible whenever the macro
+    ' is used. Overrides whatever caption the designer holds.
+    Me.Caption = "Screenshot HD " & MACRO_VERSION
 
     ' Zoom preserves the output aspect ratio inside the preview box rather than
     ' stretching the image to fill it
@@ -67,7 +72,15 @@ Private Sub UserForm_Initialize()
     RefreshPreview True, False
 End Sub
 
+' Both of these clear FormIsOpen, which is what lets Module1's idle loop finish
+' and the macro end. Without it the loop keeps running after the window has
+' gone, and SOLIDWORKS holds the .swp open against editing.
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    FormIsOpen = False
+End Sub
+
 Private Sub UserForm_Terminate()
+    FormIsOpen = False
     ClearPreviewCache
 End Sub
 
