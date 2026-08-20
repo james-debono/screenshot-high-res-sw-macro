@@ -26,11 +26,11 @@
 '
 ' To use, open a part or assembly and run the macro.
 '
-'   Version   0.6.1
-'   Date      2026-08-13
+'   Version   0.6.2
+'   Date      2026-08-20
 '   Author    James Debono
 '   Licence   MIT - full text below
-'   Source    https://github.com/james-debono/solidworks-screenshot-hd
+'   Source    https://github.com/james-debono/screenshot-hd-sw-macro
 '
 ' Requires the SOLIDWORKS and SOLIDWORKS Constant type libraries, which a
 ' SOLIDWORKS macro project references by default.
@@ -38,6 +38,7 @@
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.6.2   Version shown in brackets in the title bar. Source URL updated.
 '   0.6.1   Version shown in the form's title bar.
 '   0.6.0   Renamed from "Export PNG" to "Screenshot HD". Licence and header.
 '   0.5.x   Save location with recent folders; Windows folder picker; fixed the
@@ -127,7 +128,7 @@ Option Explicit
 
 ' Must match the Version line in the header block above. build-library.ps1 checks
 ' that they agree and fails the build if they drift. Shown in the form's title bar.
-Public Const MACRO_VERSION As String = "0.6.1"
+Public Const MACRO_VERSION As String = "0.6.2"
 
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
