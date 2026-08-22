@@ -1,15 +1,15 @@
 '==============================================================================
-' Screenshot HD - user interface
+' Screenshot High Res - user interface
 '
 ' Collects the save location, file name, output pixel size and background
 ' choice, displays a preview of the framing, and triggers the export. All
 ' SOLIDWORKS work is done in the main module.
 '
-'   Version   0.6.2
-'   Date      2026-08-20
+'   Version   0.7.0
+'   Date      2026-08-21
 '   Author    James Debono
 '   Licence   MIT - full text in the header of the main module
-'   Source    https://github.com/james-debono/screenshot-hd-sw-macro
+'   Source    https://github.com/james-debono/screenshot-high-res-sw-macro
 '
 ' Controls
 '   Image1          preview
@@ -52,7 +52,7 @@ Private Sub UserForm_Initialize()
 
     ' Shown in the form's title bar, so the version is visible whenever the macro
     ' is used. Overrides whatever caption the designer holds.
-    Me.Caption = "Screenshot HD (" & MACRO_VERSION & ")"
+    Me.Caption = "Screenshot High Res (" & MACRO_VERSION & ")"
 
     ' Zoom preserves the output aspect ratio inside the preview box rather than
     ' stretching the image to fill it

@@ -1,5 +1,5 @@
 '==============================================================================
-' Screenshot HD
+' Screenshot High Res
 '
 ' Exports the current view of a part or assembly to a PNG at any pixel size you
 ' ask for, with a live preview of exactly what will be captured.
@@ -26,11 +26,11 @@
 '
 ' To use, open a part or assembly and run the macro.
 '
-'   Version   0.6.2
-'   Date      2026-08-20
+'   Version   0.7.0
+'   Date      2026-08-21
 '   Author    James Debono
 '   Licence   MIT - full text below
-'   Source    https://github.com/james-debono/screenshot-hd-sw-macro
+'   Source    https://github.com/james-debono/screenshot-high-res-sw-macro
 '
 ' Requires the SOLIDWORKS and SOLIDWORKS Constant type libraries, which a
 ' SOLIDWORKS macro project references by default.
@@ -38,9 +38,10 @@
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.7.0   Renamed from "Screenshot HD". Now has its own repository.
 '   0.6.2   Version shown in brackets in the title bar. Source URL updated.
 '   0.6.1   Version shown in the form's title bar.
-'   0.6.0   Renamed from "Export PNG" to "Screenshot HD". Licence and header.
+'   0.6.0   Renamed from "Export PNG" to "Screenshot High Res". Licence and header.
 '   0.5.x   Save location with recent folders; Windows folder picker; fixed the
 '           macro never ending after the form was closed.
 '   0.4.x   Pixel-size output, live preview, transparent or white background.
@@ -128,7 +129,7 @@ Option Explicit
 
 ' Must match the Version line in the header block above. build-library.ps1 checks
 ' that they agree and fails the build if they drift. Shown in the form's title bar.
-Public Const MACRO_VERSION As String = "0.6.2"
+Public Const MACRO_VERSION As String = "0.7.0"
 
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
@@ -164,7 +165,7 @@ Private Const MIN_PREVIEW_DPI As Long = 6
 Private Const IDLE_MS As Long = 10
 
 ' Stored settings, written under the standard VB and VBA program settings key
-Private Const SETTINGS_APP As String = "Screenshot HD"
+Private Const SETTINGS_APP As String = "Screenshot High Res"
 Private Const SETTINGS_SECTION As String = "Locations"
 Private Const MAX_RECENT As Long = 8
 
