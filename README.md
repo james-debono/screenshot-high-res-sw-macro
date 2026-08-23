@@ -28,10 +28,10 @@ remembers where you've been.
 [latest release](../../releases/latest), then run it with **Tools > Macro > Run**,
 or add it to a toolbar with **Tools > Customize > Commands > Macro**.
 
-**With [MacroDeck](https://github.com/james-debono/macrodeck-sw-addin):** get the
-[MacroDeck Collection](https://github.com/james-debono/macrodeck-collection-sw-macro-library/releases/latest),
+**With [MacroShelf](https://github.com/james-debono/macroshelf-sw-addin):** get the
+[MacroShelf Collection](https://github.com/james-debono/macroshelf-collection-sw-macro-library/releases/latest),
 which packages this macro with its icon and hover text alongside every other macro
-in the set. Point MacroDeck at the unzipped folder and it appears as a button.
+in the set. Point MacroShelf at the unzipped folder and it appears as a button.
 
 ## One-time setup — required
 
