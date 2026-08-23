@@ -99,7 +99,7 @@ MIT — see [LICENSE](LICENSE). Free to use, modify and share. The full licence 
 is also carried inside the macro itself, so a `.swp` passed on by itself still
 carries its licence.
 
-Written by James Debono, with AI assistance. Everything here was tested by
+Created by James Debono, with AI assistance. Everything here was tested by
 hand in SOLIDWORKS — nothing that touches the API can be verified any other way.
 
 ## Trademarks
