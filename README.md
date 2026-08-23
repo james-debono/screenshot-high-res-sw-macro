@@ -69,6 +69,26 @@ The form doesn't close after exporting, so you can reframe and export again.
 - Exporting leaves print capture, User Defined paper and the DPI set in your export
   options. Worth knowing if a later manual File > Save As behaves unexpectedly.
 
+## It shells out to PowerShell, and why
+
+Worth stating plainly, because a macro that writes a `.ps1` and runs it is a
+pattern corporate antivirus and EDR tools flag on sight.
+
+This macro calls **PowerShell twice**, writing a short script to your `%TEMP%`
+folder and running it hidden:
+
+- **The folder picker.** The SOLIDWORKS API has no folder-browse dialog, and
+  raising the Windows one in-process is unreliable from VBA.
+- **Image conversion**, for the transparent-background path.
+
+Both scripts are written by the macro, run once, and do nothing but the job named
+above — no network access, no downloads, nothing persistent. Running out of
+process is also a safety property: a mistake there takes down a throwaway
+`powershell.exe` rather than SOLIDWORKS.
+
+`%TEMP%` is per-user and access-controlled, so nothing here is exposed to other
+users of the machine. If your IT department asks, this section is the answer.
+
 ## Not in scope
 
 Drawings (sheet print options are untouched), photorealistic rendering, and batch
