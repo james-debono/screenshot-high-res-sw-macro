@@ -5,6 +5,12 @@ any pixel size you ask for, with a live preview of exactly what will be captured
 
 Works with SOLIDWORKS 2022, 2024 and 2025.
 
+> **Want all ten macros at once?** This one is part of the [MacroShelf
+> Collection](https://github.com/james-debono/macroshelf-collection-sw-macro-library) — a single
+> download, already arranged as a library for the [MacroShelf](https://github.com/james-debono/macroshelf-sw-addin)
+> add-in, so every macro lands on a SOLIDWORKS toolbar tab with its icon and
+> hover text already set up.
+
 ## Why
 
 SOLIDWORKS can already export images, but not comfortably:
