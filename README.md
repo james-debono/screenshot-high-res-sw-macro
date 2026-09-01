@@ -3,7 +3,8 @@
 A SOLIDWORKS macro that exports the current view of a part or assembly to a PNG at
 any pixel size you ask for, with a live preview of exactly what will be captured.
 
-Works with SOLIDWORKS 2022, 2024 and 2025.
+**Tested on SOLIDWORKS 2022, 2024 and 2025** — those are the versions I
+have. Other versions are likely to work; they are simply untested.
 
 > **Want all ten macros at once?** This one is part of the [MacroShelf
 > Collection](https://github.com/james-debono/macroshelf-collection-sw-macro-library) — a single
