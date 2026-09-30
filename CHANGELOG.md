@@ -13,6 +13,18 @@ This macro has been renamed twice. It was **Export PNG** up to and including
 0.7.0 — "HD" named one specific resolution, and the macro exports at any pixel
 size well past it.
 
+## 0.7.1 — 2026-09-30
+
+- **One entry point, called `main`.** Three Subs without parameters used to
+  qualify, and SOLIDWORKS and MacroShelf both start a macro from one of those —
+  so either could start the wrong one, which showed nothing at all. It worked
+  only because the right one happened to be listed first. The other two now take
+  an unused parameter, which rules them out.
+- **If you made your own toolbar button** with **Tools > Customize > Commands >
+  Macro**, it was set to run `ShowSaveAsForm`, which is now called `main`. Set
+  the button up again and choose `main`. MacroShelf needs nothing.
+- No other change.
+
 ## 0.7.0 — 2026-08-21
 
 - **Renamed from "Screenshot HD" to "Screenshot High Res."** "HD" names one

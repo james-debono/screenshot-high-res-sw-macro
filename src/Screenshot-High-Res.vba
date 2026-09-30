@@ -26,8 +26,8 @@
 '
 ' To use, open a part or assembly and run the macro.
 '
-'   Version   0.7.0
-'   Date      2026-08-21
+'   Version   0.7.1
+'   Date      2026-09-30
 '   Author    James Debono
 '   Licence   MIT - full text below
 '   Source    https://github.com/james-debono/screenshot-high-res-sw-macro
@@ -38,6 +38,7 @@
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.7.1   One entry point, main, so the right procedure always runs.
 '   0.7.0   Renamed from "Screenshot HD". Now has its own repository.
 '   0.6.2   Version shown in brackets in the title bar. Source URL updated.
 '   0.6.1   Version shown in the form's title bar.
@@ -115,8 +116,16 @@
 ' Form lifetime
 '   The form is modeless so the view can be manipulated while it is open. A
 '   SOLIDWORKS macro ends as soon as its entry point returns, which would
-'   destroy a modeless form immediately, so ShowSaveAsForm idles until the form
-'   closes. That idle loop also drives the camera polling behind auto refresh.
+'   destroy a modeless form immediately, so main idles until the form closes.
+'   That idle loop also drives the camera polling behind auto refresh.
+'
+' Entry point
+'   main is the only Sub without parameters. SOLIDWORKS and MacroShelf both
+'   pick one of those to start the macro, and with several to choose from
+'   either could start the wrong one. ClearPreviewCache and AutoRefreshTick are
+'   called across the module and form, so they cannot be Private; each takes an
+'   unused parameter instead, which takes it out of the running. Do not remove
+'   those parameters as dead code.
 '==============================================================================
 
 Option Explicit
@@ -129,7 +138,7 @@ Option Explicit
 
 ' Must match the Version line in the header block above. build-library.ps1 checks
 ' that they agree and fails the build if they drift. Shown in the form's title bar.
-Public Const MACRO_VERSION As String = "0.7.0"
+Public Const MACRO_VERSION As String = "0.7.1"
 
 Public Const CAPTURE_SCREEN As Long = 0
 Public Const CAPTURE_PRINT As Long = 1
@@ -194,11 +203,11 @@ Private m_lPreviewW As Long
 Private m_lPreviewH As Long
 
 ' Set by UserForm1 as it opens and closes. The idle loop below must key off this
-' rather than off UserForm1 itself - see ShowSaveAsForm for why.
+' rather than off UserForm1 itself - see main for why.
 Public FormIsOpen As Boolean
 
-' Entry point.
-Sub ShowSaveAsForm()
+' Entry point, and the only Sub without parameters - see "Entry point" above.
+Sub main()
     ' Clear anything left loaded by a previous run that was stopped rather than
     ' closed. Guarded by the count so that an unnecessary Unload cannot itself
     ' create a form.
@@ -235,7 +244,7 @@ Sub ShowSaveAsForm()
         Sleep IDLE_MS
         If Not FormIsOpen Then Exit Do
 
-        UserForm1.AutoRefreshTick
+        UserForm1.AutoRefreshTick Empty
     Loop
 
     FormIsOpen = False
@@ -656,7 +665,9 @@ Public Function PreviewToBmp(ByVal pxW As Long, ByVal pxH As Long, ByVal lBg As 
     PreviewToBmp = sBmp
 End Function
 
-Public Sub ClearPreviewCache()
+' The parameter is unused. It keeps SOLIDWORKS from treating this as a way to
+' start the macro - see "Entry point" above.
+Public Sub ClearPreviewCache(ByVal unused As Variant)
     On Error Resume Next
     If m_sPreviewPng <> "" Then Kill m_sPreviewPng
     Kill Environ("TEMP") & "\ScreenshotHD_preview.bmp"

@@ -36,6 +36,14 @@ framing follows the graphics area's shape.
   never ended the macro after the form closed.
 - **Editing a `.swp` is a paste, not an import.** Importing a `.frm` overwrites
   the form layout, which exists only inside the `.swp` and has no text source.
+- **One entry point, and it is `main`.** SOLIDWORKS and MacroShelf start a macro
+  from a Sub without parameters, and with several to choose from either can
+  start the wrong one. Until 0.7.1 there were three — `ShowSaveAsForm`,
+  `ClearPreviewCache` and the form's `AutoRefreshTick` — and it worked only
+  because the right one was listed first. `ClearPreviewCache` and
+  `AutoRefreshTick` are called across the module and the form, so they cannot be
+  `Private`; each takes an unused parameter instead. Removing that parameter as
+  dead code brings the problem back.
 
 ## Known limitations
 
@@ -48,6 +56,9 @@ framing follows the graphics area's shape.
 
 Confirmed working in SOLIDWORKS, including the transparency path and the preview
 matching the exported framing.
+
+0.7.1 changes only which Sub starts the macro. It still has to be confirmed by a
+run from **Tools > Macro > Run** and from MacroShelf.
 
 ## There is no build step
 

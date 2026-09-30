@@ -5,8 +5,8 @@
 ' choice, displays a preview of the framing, and triggers the export. All
 ' SOLIDWORKS work is done in the main module.
 '
-'   Version   0.7.0
-'   Date      2026-08-21
+'   Version   0.7.1
+'   Date      2026-09-30
 '   Author    James Debono
 '   Licence   MIT - full text in the header of the main module
 '   Source    https://github.com/james-debono/screenshot-high-res-sw-macro
@@ -81,7 +81,7 @@ End Sub
 
 Private Sub UserForm_Terminate()
     FormIsOpen = False
-    ClearPreviewCache
+    ClearPreviewCache Empty
 End Sub
 
 ' --- Save location ----------------------------------------------------------
@@ -197,7 +197,10 @@ End Function
 ' Polling is used in preference to hooking DModelViewEvents: it survives a
 ' change of document without re-hooking, and cannot be swamped by one
 ' notification per frame during an orbit.
-Public Sub AutoRefreshTick()
+'
+' The parameter is unused. It keeps SOLIDWORKS from treating this as a way to
+' start the macro - see "Entry point" in the main module.
+Public Sub AutoRefreshTick(ByVal unused As Variant)
     Dim sNow As String
     Dim sngElapsed As Single
     Dim sngSincePoll As Single
