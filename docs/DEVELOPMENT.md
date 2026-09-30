@@ -57,8 +57,8 @@ framing follows the graphics area's shape.
 Confirmed working in SOLIDWORKS, including the transparency path and the preview
 matching the exported framing.
 
-0.7.1 changes only which Sub starts the macro. It still has to be confirmed by a
-run from **Tools > Macro > Run** and from MacroShelf.
+0.7.1 changes only which Sub starts the macro, and is confirmed working when run
+from **Tools > Macro > Run** and from MacroShelf.
 
 ## There is no build step
 
